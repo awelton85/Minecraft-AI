@@ -44,11 +44,11 @@ The *host PC* runs the server and the bots; the *player PC* is where you play. T
 Full step-by-step guide: **[docs/SETUP-WINDOWS.md](docs/SETUP-WINDOWS.md)**. Short version:
 
 1. **On the host PC**, install [Node.js LTS](https://nodejs.org/) (20+) and Java 25 (`winget install EclipseAdoptium.Temurin.25.JDK`).
-2. Download this repository to the host PC, then double-click **`setup.bat`**. It installs dependencies, then downloads Paper and ViaVersion into `server\`, after you accept the Minecraft EULA.
-3. Start the server: **`server\start-server.bat`**.
+2. Get this repository onto the host PC, e.g. `cd C:\` then `git clone https://github.com/awelton85/Minecraft-AI.git` (install Git first with `winget install Git.Git` if needed), or *Code → Download ZIP*. Then double-click **`setup.bat`**. It installs dependencies, then downloads Paper and ViaVersion into `server\`, after you accept the Minecraft EULA.
+3. Start the server: **`server\start-server.bat`**. Ignore Paper's warning to update to a newer Minecraft version: the bots only support up to 26.1.
 4. Start the bots: **`start-bots.bat`**. On first run it creates `config\settings.json` and prints the dashboard address.
 5. Open the dashboard (`https://<host-ip>:3000`, or `https://localhost:3000` on the host itself) and accept the self-signed certificate warning. In **Settings**:
-   - Put **your Minecraft username** in *Owners*. The bots only take orders from owners.
+   - Replace `YourMinecraftName` in *Owners* with **your Minecraft username**, then save. Do this first: the bots only take orders from owners, and only work on their own while an owner is online.
    - Choose **Claude API** and paste your API key, or choose **LM Studio** and pick a model.
 6. **On the player PC**, open Minecraft and go to Multiplayer → Add Server → `<host-ip>` (or `localhost`).
 7. Say hi in chat: `Steve_AI, come here and help me build a house`.

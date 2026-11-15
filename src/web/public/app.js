@@ -656,7 +656,7 @@ $('#saveSettings').onclick = guard(async () => {
   if (patch.web && !Object.keys(patch.web).length) delete patch.web;
   if (!Object.keys(patch).length) { toast('Nothing changed'); return; }
   const r = await api('PUT', '/api/settings', { patch });
-  S.settings = r.settings; S.secrets = r.secrets; settingsDirty = false; renderSettingsForm();
+  S.settings = r.settings; S.secrets = r.secrets; settingsDirty = false; renderSettingsForm(); renderBots();
   const box = $('#restartBox'); box.textContent = '';
   const rb = r.restartRequired?.bots || [], ra = r.restartRequired?.app || [];
   if (rb.length || ra.length) {

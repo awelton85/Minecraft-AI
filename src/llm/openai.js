@@ -55,7 +55,8 @@ export class OpenAICompatProvider {
     const list = await this.client.models.list();
     const out = [];
     for await (const m of list) out.push(m.id);
-    return out;
+    // Embedding models can't chat; don't offer them.
+    return out.filter((id) => !/embed/i.test(id));
   }
 
   toApiMessages(system, messages, mode, tools) {

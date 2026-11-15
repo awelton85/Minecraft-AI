@@ -540,7 +540,7 @@ async function main() {
   info('\nStart the server:');
   info(IS_WIN ? `  ${path.join(dir, 'start-server.bat')}   (double-click it)` : `  ${path.join(dir, 'start-server.sh')}`);
   info('  Type "stop" in the server console to shut down cleanly.');
-  info('\nBots: point them at host "localhost" (the default; this PC), port ' + port + ', and set the bot version to "' +
+  info('\nBots: they connect to host "127.0.0.1" (the default; this PC), port ' + port + ', and set the bot version to "' +
     (version.split('.').slice(0, 2).join('.')) + '" if auto-detect has trouble.');
 
   info('\nJoining from another PC on your network (Minecraft Java, latest version is fine):');
@@ -555,7 +555,10 @@ async function main() {
   info(`  (Installations > New installation > Version: release ${version}).`);
 
   info('\nWindows Firewall (on this PC, only needed for players on other PCs; run PowerShell as Administrator):');
-  info(`  New-NetFirewallRule -DisplayName "Minecraft Server (TCP ${port})" -Direction Inbound -Protocol TCP -LocalPort ${port} -Action Allow -Profile Private`);
+  info(`  New-NetFirewallRule -DisplayName "Minecraft Server" -Direction Inbound -Protocol TCP -LocalPort ${port} -Action Allow -Profile Private`);
+  info('  New-NetFirewallRule -DisplayName "Minecraft AI Dashboard" -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Allow -Profile Private');
+  info('  (Same commands as docs/SETUP-WINDOWS.md section 3.)');
+  warn('Paper will say this server is several releases behind and should be updated: ignore that. The bots only support up to ' + version + '.');
   info('  Also make sure the home network is set to "Private", and allow Java if Windows asks on first start.');
   warn('Security: the server is in offline mode for the bots - keep it LAN-only, never port-forward ' + port + '.');
 }

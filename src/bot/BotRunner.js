@@ -184,7 +184,7 @@ export class BotRunner {
     if (SLOW_RETRY_KICKS.test(kick) || DUPLICATE_LOGIN.test(kick)) delay = Math.max(delay, max);
     delay += Math.floor(Math.random() * 1000);
     this.log.info(`Disconnected (${kick || reason || 'connection lost'}). Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts}).`);
-    if (wasConnected) this.agent.notify('You were disconnected from the server and are reconnecting.');
+    if (wasConnected) this.agent.notify('You were disconnected from the server and are reconnecting.', { passive: true });
     this.setState('reconnecting');
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
@@ -234,7 +234,7 @@ export class BotRunner {
     }, 15_000);
 
     const welcome = this.memory.data.stats.sessions > 1 ? 'You reconnected to the world.' : 'You just joined the world for the first time.';
-    this.agent.notify(welcome);
+    this.agent.notify(welcome, { passive: true }); // context only: joining is not a reason to start working
     this.emitStatus(true);
   }
 

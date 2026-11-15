@@ -30,6 +30,7 @@ export class Agent extends EventEmitter {
     this.history = [];          // neutral message list (see docs/ARCHITECTURE.md)
     this.system = null;         // frozen system prompt for the current conversation
     this.events = [];           // pending event lines for the next user message
+    this.passiveEvents = [];    // context lines that ride along with the next turn but don't trigger one
     this.carrySummary = null;   // summary of the previous conversation, shown once in the next turn
     this.goal = '';             // current explicit goal ('' = default goal)
     this.autonomous = settingsManager.settings.agent?.autonomous ?? true;
@@ -100,7 +101,13 @@ export class Agent extends EventEmitter {
    * Queue an event for the model. `urgent` aborts an interruptible action (follow, explore, wait);
    * `abortAny` aborts whatever is running (owner talking, danger).
    */
-  notify(text, { urgent = false, abortAny = false } = {}) {
+  notify(text, { urgent = false, abortAny = false, passive = false } = {}) {
+    if (passive) {
+      // Context for the next turn, but not a reason to start one (no LLM call, no API cost).
+      this.passiveEvents.push(`[${clock()}] ${text}`);
+      if (this.passiveEvents.length > 10) this.passiveEvents.shift();
+      return;
+    }
     this.events.push(`[${clock()}] ${text}`);
     if (this.events.length > 40) this.events.splice(0, this.events.length - 40);
     if (abortAny || (urgent && this.currentAction?.interruptible)) this.abortAction('interrupted: ' + text.slice(0, 80), { interrupted: true });
@@ -293,6 +300,7 @@ export class Agent extends EventEmitter {
       }
 
       const savedEvents = this.events;
+      const savedPassive = this.passiveEvents;
       const observation = this.composeObservation(continuing);
       this.history.push({ role: 'user', content: observation });
       const turnStart = this.history.length;
@@ -305,6 +313,7 @@ export class Agent extends EventEmitter {
           if (this.history.length === turnStart) {
             this.history.pop();
             this.events = [...savedEvents, ...this.events];
+            this.passiveEvents = [...savedPassive, ...this.passiveEvents];
           }
           if (turnStart === 1) {
             // Even a brand-new conversation doesn't fit: compacting can't help.
@@ -321,6 +330,7 @@ export class Agent extends EventEmitter {
             // Nothing happened yet: put the observation's events back so the command isn't lost.
             this.history.pop();
             this.events = [...savedEvents, ...this.events];
+            this.passiveEvents = [...savedPassive, ...this.passiveEvents];
           }
           return;
         }
@@ -373,7 +383,8 @@ export class Agent extends EventEmitter {
       this.carrySummary = 'The previous conversation was reset after the model declined a request.';
     }
     // Keep going on long tasks instead of going silent after maxStepsPerTurn.
-    if (hitStepCap && !this._stopTurn && (this.goal || this.pendingReply || this.autonomous) && this.continuations < MAX_CONTINUATIONS) {
+    if (hitStepCap && !this._stopTurn && (this.goal || this.pendingReply || (this.autonomous && this.ownerOnline()))
+      && this.continuations < MAX_CONTINUATIONS) {
       this.continuations++;
       this.continuePending = true;
     } else if (!hitStepCap) {
@@ -579,8 +590,10 @@ export class Agent extends EventEmitter {
       this.carrySummary = null;
     }
     if (this.events.some((e) => /says: "/.test(e))) this.pendingReply = true;
-    if (this.events.length) lines.push('EVENTS:\n' + this.events.join('\n'));
+    const all = [...this.passiveEvents, ...this.events];
+    if (all.length) lines.push('EVENTS:\n' + all.join('\n'));
     this.events = [];
+    this.passiveEvents = [];
     lines.push('CURRENT GOAL: ' + (this.goal || `(none set) default: ${this.character.defaultGoal}`));
     if (!this.autonomous) lines.push('Autonomous mode is OFF: only respond to requests; do not start new projects on your own.');
     lines.push('SURROUNDINGS:\n' + safeDescribe(this.runner.bot, 'brief'));

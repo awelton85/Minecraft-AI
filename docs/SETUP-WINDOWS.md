@@ -19,9 +19,16 @@ The host PC needs enough memory for the server (4 GB by default) plus a little f
    winget install EclipseAdoptium.Temurin.25.JDK
    ```
    You can also download the MSI from https://adoptium.net/ instead.
-3. **Get this project**:
-   - With git: `git clone https://github.com/awelton85/Minecraft-AI.git`
-   - Without git: on GitHub use *Code → Download ZIP* and extract it, e.g. to `C:\Minecraft-AI`.
+
+   Windows asks for admin permission (a UAC prompt) during the install: click *Yes*. An older Java can stay installed, because the setup script finds and uses Java 25 automatically.
+3. **Get this project** into a simple folder such as `C:\Minecraft-AI`. Either:
+   - **With git.** If `git` isn't installed, run `winget install Git.Git` (another admin prompt), then open a *new* terminal. Then run:
+     ```powershell
+     cd C:\
+     git clone https://github.com/awelton85/Minecraft-AI.git
+     ```
+     This creates `C:\Minecraft-AI`.
+   - **Without git.** On the GitHub page use *Code → Download ZIP* and extract it to `C:\Minecraft-AI`.
 
 ## 2. Host PC: create the Minecraft server
 
@@ -32,17 +39,28 @@ Double-click **`setup.bat`** in the project folder. It will:
 3. ask you to accept the Minecraft EULA;
 4. write `server\server.properties` and `server\start-server.bat`.
 
-Optional flags: `setup.bat --ram 6G` (memory for the server) or `setup.bat --install-java` (installs Java via winget).
+Optional flags:
+- `--ram 6G`: memory for the server.
+- `--install-java`: installs Java via winget.
+- `--accept-eula`: skips the EULA question.
+
+For example, `setup.bat --ram 6G`.
+
+`npm install` may print deprecation warnings, a "vulnerabilities" count and an npm update notice. These are normal. **Don't run `npm audit fix --force`**, because it can break the bot libraries.
 
 **Already have a server?** You can point the bots at it instead. In Settings, set *Server connection* to its address and port. The server needs `online-mode=false` (see Security in the README) and a version the bots support, 26.1.x or older. A newer server should also work with the ViaVersion and ViaBackwards plugins installed (untested).
 
-Start the server by double-clicking **`server\start-server.bat`**. Wait for `Done (…)! For help, type "help"`. The first start takes a minute while the world generates.
+Start the server by double-clicking **`server\start-server.bat`**. Wait for `Done (…)! For help, type "help"`. The first start can take up to a minute while the world generates.
+
+> **Ignore Paper's "update" warning.** Paper prints that you are several releases behind and should update as soon as possible. **Don't update the server**: the bots only support Minecraft up to 26.1, and newer players can already join through ViaVersion.
+
+The first time Java starts, Windows may ask whether to allow it through the firewall, even if you only play on this PC. Choose **Allow** with **Private networks** ticked if you'll ever join from another PC; for a same-PC setup either choice works.
 
 ## 3. Host PC: allow network access
 
 *Skip this section if you play on the host PC itself.*
 
-The first time Java starts, Windows asks whether to allow it. Tick **Private networks**. If you missed the prompt, run this in an *Administrator* PowerShell:
+If you missed or declined the firewall prompt from section 2, run this in an *Administrator* PowerShell. It allows the Minecraft server (port 25565) and the dashboard (port 3000):
 ```powershell
 New-NetFirewallRule -DisplayName "Minecraft Server" -Direction Inbound -Protocol TCP -LocalPort 25565 -Action Allow -Profile Private
 New-NetFirewallRule -DisplayName "Minecraft AI Dashboard" -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Allow -Profile Private
@@ -55,11 +73,17 @@ Find the host PC's IP address with `ipconfig` and look for "IPv4 Address", e.g. 
 
 Double-click **`start-bots.bat`**. The console prints lines such as:
 ```
+Dashboard: https://localhost:3000
 Dashboard: https://192.168.1.20:3000
-Connecting to 127.0.0.1:25565 as Steve_AI...
-Spawned in world (Minecraft 26.1) at ...
+WARN  No Claude API key configured yet - add it on the dashboard Settings page, or switch the provider to LM Studio.
+WARN  Set your Minecraft username under "owners" in Settings so the bots follow your commands.
+INFO  [Steve_AI] Connecting to 127.0.0.1:25565 as Steve_AI...
+INFO  [Steve_AI] Spawned in world (Minecraft 26.1) at ...
+ERROR [Steve_AI] No Anthropic API key set. Add it on the dashboard Settings page (or set ANTHROPIC_API_KEY).
 ```
-The window restarts the program automatically if it ever crashes. To stop it cleanly, press **Ctrl+C**; the bots save their memories first.
+On the first run, the two warnings and the red **ERROR** about the API key are expected until you finish section 5. A line about a "deprecated event (physicTick)" comes from a library and is harmless.
+
+The window restarts the program automatically if it ever crashes. To stop it cleanly, press **Ctrl+C**; the bots save their memories first. When Windows then asks `Terminate batch job (Y/N)?`, type **Y**.
 
 Leave *Server connection → host* at `127.0.0.1` when the bots run on the same PC as the server.
 
@@ -69,8 +93,8 @@ On any device on your network, open `https://<host-ip>:3000` (or `https://localh
 
 The browser warns that the certificate isn't trusted. It's a self-signed certificate made for your PC, so click **Advanced → Continue/Proceed**. HTTPS is what allows the browser to use your microphone.
 
-Under **Settings → General**:
-- **Owners**: your Minecraft username (exactly as in game). The bots only obey owners.
+Under **Settings → General**, in this order:
+- **Owners**: replace the placeholder `YourMinecraftName` with your Minecraft username (exactly as in game). The bots only obey owners, and they only work on their own while an owner is online (see section 10).
 - **LLM provider**:
   - *Claude API*: paste your API key from https://console.anthropic.com/ and click **Save key**, then **Test connection**.
   - *LM Studio*: see section 7.
@@ -93,7 +117,7 @@ Talk to the bot in chat: `Steve_AI follow me`, `Steve_AI get 10 oak logs and mak
 2. Load the model with a context length of at least **16384**.
 3. Go to the **Developer** tab and click **Start Server**. The default address is `http://127.0.0.1:1234`.
    - If LM Studio runs on a *different* PC from the bots, enable **Serve on Local Network** and use that PC's IP in the dashboard, e.g. `http://192.168.1.30:1234/v1`.
-4. On the dashboard, open **Settings → LLM provider → LM Studio**, click **Refresh models**, pick the model (leave it blank to use whatever is loaded), then **Test connection** and **Save**.
+4. On the dashboard, open **Settings → LLM provider → LM Studio**, click **Refresh models**, pick the model (leave it blank to use whatever is loaded), then click **Test connection**. The first test can take up to a minute while LM Studio loads the model; it shows "testing…" until then. Finally click **Save settings** at the bottom of the page.
 5. Set **Tool mode** to *auto*. If the model often "talks about" actions instead of doing them, set it to *json*.
 6. Set *Context tokens* to match what you loaded the model with. **16k is the practical minimum**: the bot's tool list and instructions alone take about 6k tokens. With less, the bot stops and the dashboard says the context is too small.
 
@@ -119,7 +143,7 @@ Address them by name in chat. `everyone …` goes to all of them. Bot-to-bot cha
 
 ## 10. Keeping API costs down (Claude)
 
-- **Pause idle check-ins while no owner is online** (on by default): bots only think on their own while you're in the game.
+- **Pause idle check-ins while no owner is online** (on by default): bots only work on their own while one of the **Owners** is in the game. They still answer when spoken to (in game or from the dashboard), and with no owner set they never work on their own.
 - Idle check-ins that find nothing to do back off gradually, up to once every 10 minutes.
 - A lower *effort* setting, or a smaller model (`claude-sonnet-5-5`, `claude-haiku-5-5`), is cheaper. You can turn *Autonomous* off per bot so it only acts when asked.
 
