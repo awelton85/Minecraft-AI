@@ -558,8 +558,9 @@ async function main() {
   info(`  New-NetFirewallRule -DisplayName "Minecraft Server" -Direction Inbound -Protocol TCP -LocalPort ${port} -Action Allow -Profile Private`);
   info('  New-NetFirewallRule -DisplayName "Minecraft AI Dashboard" -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Allow -Profile Private');
   info('  (Same commands as docs/SETUP-WINDOWS.md section 3.)');
-  warn('Paper will say this server is several releases behind and should be updated: ignore that. The bots only support up to ' + version + '.');
   info('  Also make sure the home network is set to "Private", and allow Java if Windows asks on first start.');
+  info('');
+  warn('Paper will say this server is several releases behind and should be updated: ignore that. The bots only support up to ' + version + '.');
   warn('Security: the server is in offline mode for the bots - keep it LAN-only, never port-forward ' + port + '.');
 }
 

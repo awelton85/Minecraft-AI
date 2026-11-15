@@ -600,7 +600,7 @@ function llmFieldset() {
   const lmModel = h('select', { onchange: (e) => { form.llm.lmstudio.model = e.target.value; lmTxt.value = e.target.value; markDirty(); } });
   const lmTxt = h('input', { type: 'text', value: form.llm.lmstudio.model, placeholder: 'model id (blank = whatever is loaded)', oninput: (e) => { form.llm.lmstudio.model = e.target.value; markDirty(); } });
   const fillModels = () => {
-    lmModel.textContent = ''; lmModel.append(h('option', { value: '', text: lmModels.length ? 'Choose loaded model...' : 'No models listed' }));
+    lmModel.textContent = ''; lmModel.append(h('option', { value: '', text: lmModels.length ? 'Choose a model...' : 'No models listed' }));
     for (const m of lmModels) lmModel.append(h('option', { value: m, text: m, selected: m === form.llm.lmstudio.model }));
   };
   fillModels();
