@@ -66,6 +66,7 @@ A Skill:
 | `bot` | mineflayer Bot | the connected bot (spawned) |
 | `mcData` | minecraft-data | for `bot.version` |
 | `signal` | AbortSignal | aborted when the user says stop / a new urgent command arrives / timeout |
+| `deadline` / `timeLeftMs()` | number / fn | wall-clock deadline (ms) a little before the Agent's hard timeout; long skills must finish by then and return partial progress as a normal result |
 | `log(msg)` | fn | debug log line |
 | `say(text)` | async fn | send in-game chat as this bot (handles splitting/length) |
 | `memory` | MemoryStore | see below |

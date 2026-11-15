@@ -458,7 +458,9 @@ export class Agent extends EventEmitter {
       const guard = new Promise((_, reject) => {
         hang = setTimeout(() => reject(new Error(`did not finish within ${timeoutS + 15}s`)), (timeoutS + 15) * 1000);
       });
-      const out = await Promise.race([skill.run(this.skillContext(controller.signal), call.args || {}), guard]);
+      // Skills get a deadline a little before the hard timeout so they can stop cleanly and report progress.
+      const deadline = Date.now() + Math.max(5, timeoutS - 10) * 1000;
+      const out = await Promise.race([skill.run(this.skillContext(controller.signal, deadline), call.args || {}), guard]);
       content = String(out ?? 'Done.');
       this.failures.delete(key);
       this.consecutiveFailures = 0;
@@ -483,7 +485,7 @@ export class Agent extends EventEmitter {
       if (this.currentAction === action) this.currentAction = null;
       this.runner.emitStatus();
     }
-    if (content.length > 1500) content = content.slice(0, 1500) + '…';
+    if (content.length > 3000) content = content.slice(0, 3000) + '…';
     this.emit('thought', `${isError ? '✗' : '✓'} ${call.name}: ${content.slice(0, 200)}`);
     if (this.consecutiveFailures >= 10) {
       // Truly stuck: stop this turn, pause autonomy for a while so we don't burn tokens, and ask for help.
@@ -495,8 +497,10 @@ export class Agent extends EventEmitter {
     return { id: call.id, name: call.name, content, isError };
   }
 
-  skillContext(signal) {
+  skillContext(signal, deadline = Date.now() + 170_000) {
     return {
+      deadline,
+      timeLeftMs: () => Math.max(0, deadline - Date.now()),
       bot: this.runner.bot,
       mcData: this.runner.mcData,
       signal,
