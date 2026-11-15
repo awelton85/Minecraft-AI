@@ -291,6 +291,13 @@ function resolveFrom(ctx, raw, table, kind) {
 
 /** Resolve a free-form name to item name(s). Returns { names, generic }. Throws SkillError listing close matches. */
 export function resolveItem(ctx, raw) {
+  const norm = normName(raw);
+  const names = ctx.bot.registry.itemsByName;
+  if (!names[norm]) {
+    if (norm === 'fish') return { names: ['cod', 'salmon', 'cooked_cod', 'cooked_salmon', 'tropical_fish'].filter((n) => names[n]), generic: true, query: norm };
+    if (['food', 'meat', 'foods'].includes(norm)) return { names: Object.keys(ctx.bot.registry.foodsByName ?? {}), generic: true, query: norm };
+    if (norm === 'meat') return { names: ['beef', 'porkchop', 'chicken', 'mutton', 'rabbit', 'cooked_beef', 'cooked_porkchop', 'cooked_chicken', 'cooked_mutton'], generic: true, query: norm };
+  }
   return resolveFrom(ctx, raw, ctx.bot.registry.itemsByName, 'item');
 }
 
@@ -323,6 +330,8 @@ export function resolveBlock(ctx, raw) {
   // natural stone is mined as "stone" but drops cobblestone; people ask for the drop
   if (!r.generic && r.names[0] === 'cobblestone') r.names.push('stone');
   if (!r.generic && r.names[0] === 'cobbled_deepslate') r.names.push('deepslate');
+  if (!r.generic && r.names[0] === 'dirt') r.names.push('grass_block');
+  if (!r.generic && r.names[0] === 'sand' && reg.blocksByName.red_sand) r.names.push('red_sand');
   return r;
 }
 
@@ -407,9 +416,7 @@ export async function digBlock(ctx, block, { timeoutMs } = {}) {
   const b = blockAtSafe(bot, block.position);
   if (!b || isAir(b)) return false;
   if (b.name === 'bedrock' || b.hardness === -1 || b.hardness === null) throw new SkillError(`${b.name} at ${fmtPos(b.position)} cannot be broken.`);
-  try {
-    await bot.tool.equipForBlock(b, { requireHarvest: false });
-  } catch { /* fall back to whatever is held */ }
+  await equipTool(ctx, b);
   const t = timeoutMs ?? Math.min(30000, Math.max(5000, (bot.digTime(b) || 1000) * 2 + 3000));
   try {
     await withTimeout(ctx, bot.dig(b), t, `Digging ${b.name}`, () => { try { bot.stopDigging(); } catch { /* */ } });
@@ -418,6 +425,15 @@ export async function digBlock(ctx, block, { timeoutMs } = {}) {
     throw new SkillError(`Could not dig ${b.name} at ${fmtPos(b.position)}: ${err.message}`);
   }
   return true;
+}
+
+/** Equip the best tool for a block (bounded; falls back to whatever is held). */
+export async function equipTool(ctx, block, opts = { requireHarvest: false }) {
+  try {
+    await withTimeout(ctx, ctx.bot.tool.equipForBlock(block, opts), 5000, 'Equipping tool');
+  } catch (e) {
+    if (e.message === 'Aborted') throw e;
+  }
 }
 
 const FACES = [new Vec3(0, -1, 0), new Vec3(0, 1, 0), new Vec3(-1, 0, 0), new Vec3(1, 0, 0), new Vec3(0, 0, -1), new Vec3(0, 0, 1)];
@@ -464,14 +480,14 @@ export async function placeItemAt(ctx, item, pos, { stand = false } = {}) {
   if (!target) throw new SkillError(`No solid block next to ${fmtPos(pos)} to place against (it is floating in air).`);
   const center = pos.offset(0.5, 0.5, 0.5);
   if (bot.entity.position.distanceTo(center) > 4.3 && !stand) {
-    await moveTo(ctx, new goals.GoalNear(pos.x, pos.y, pos.z, 3), { label: 'reach placement spot', timeoutMs: 30000 });
+    await moveTo(ctx, new goals.GoalNear(pos.x, pos.y, pos.z, 3), { label: 'reach placement spot', timeoutMs: 30000, dig: false });
   }
   if (bodyOverlaps(bot, pos) && !stand) {
     // step out of the way
     for (const d of [new Vec3(2, 0, 0), new Vec3(-2, 0, 0), new Vec3(0, 0, 2), new Vec3(0, 0, -2)]) {
       const t = pos.plus(d);
       try {
-        await moveTo(ctx, new goals.GoalNear(t.x, t.y, t.z, 0), { label: 'step aside', timeoutMs: 8000, noUnstick: true });
+        await moveTo(ctx, new goals.GoalNear(t.x, t.y, t.z, 0), { label: 'step aside', timeoutMs: 8000, noUnstick: true, dig: false });
         break;
       } catch (e) { if (e.message === 'Aborted') throw e; }
     }
