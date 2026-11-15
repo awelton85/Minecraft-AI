@@ -44,8 +44,8 @@ class AuthError extends Error {}
 async function api(method, url, body) {
   const res = await fetch(url, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers: method !== 'GET' ? { 'Content-Type': 'application/json' } : undefined,
+    body: method !== 'GET' ? JSON.stringify(body ?? {}) : undefined,
     credentials: 'same-origin',
   });
   let data = null;
@@ -157,6 +157,8 @@ function onWs(m) {
 const cards = new Map();
 function stClass(s) { return `st-${(s && s.connection) || 'stopped'}`; }
 function renderBots() {
+  const ow = S.settings?.owners || [];
+  $('#firstRun').classList.toggle('hidden', !(S.settings && (!ow.length || ow.includes('YourMinecraftName'))));
   const box = $('#botCards');
   const names = [...S.bots.keys()];
   for (const [n, c] of cards) if (!S.bots.has(n)) { c.root.remove(); cards.delete(n); }
@@ -172,7 +174,7 @@ function botAction(name, act, body) {
 }
 function buildCard(b) {
   const r = {};
-  r.badge = h('span', { class: 'badge' });
+  r.badge = h('span', { class: 'badge' }); r.dis = h('span', { class: 'badge st-stopped', text: 'disabled', title: 'Not auto-started at launch; Start still works' });
   r.hp = h('div', { class: 'fill' }); r.hpT = h('span');
   r.fd = h('div', { class: 'fill' }); r.fdT = h('span');
   r.kv = h('dl', { class: 'kv' });
@@ -186,13 +188,14 @@ function buildCard(b) {
   r.btnStart = h('button', { class: 'primary small', text: 'Start', onclick: () => botAction(b.name, 'start') });
   r.btnStop = h('button', { class: 'danger small', text: 'Stop', onclick: () => botAction(b.name, 'stop') });
   r.btnRestart = h('button', { class: 'small', text: 'Restart', onclick: () => botAction(b.name, 'restart') });
+  r.btnReset = h('button', { class: 'small', text: 'Reset conversation', title: 'Forget this bot\'s current chat history (long-term memory is kept)', onclick: async () => { if (confirm(`Reset ${b.name}'s conversation history?`)) { await botAction(b.name, 'reset-conversation'); toast('Conversation reset', 'ok'); } } });
   r.btnAct = h('button', { class: 'small', text: 'Stop current action', onclick: () => botAction(b.name, 'stop-action') });
   r.root = h('div', { class: 'card' },
-    h('header', null, h('h3', { text: b.name }), r.badge, h('span', { class: 'muted', text: b.username !== b.name ? `(${b.username})` : '' })),
+    h('header', null, h('h3', { text: b.name }), r.badge, r.dis, h('span', { class: 'muted', text: b.username !== b.name ? `(${b.username})` : '' })),
     h('div', { class: 'bar' }, h('b', { text: 'Health' }), h('div', { class: 'track' }, r.hp), r.hpT),
     h('div', { class: 'bar food' }, h('b', { text: 'Food' }), h('div', { class: 'track' }, r.fd), r.fdT),
     r.kv,
-    h('div', { class: 'row' }, r.btnStart, r.btnStop, r.btnRestart, r.btnAct,
+    h('div', { class: 'row' }, r.btnStart, r.btnStop, r.btnRestart, r.btnAct, r.btnReset,
       h('label', { class: 'chk' }, r.auto, 'Autonomous')),
     h('div', { class: 'goalrow' }, r.goal, r.setGoal));
   return r;
@@ -200,6 +203,7 @@ function buildCard(b) {
 function updateCard(b) {
   const r = cards.get(b.name); if (!r) return;
   const s = b.status || {};
+  r.dis.hidden = b.enabled !== false;
   r.badge.className = `badge ${stClass(s)}`; r.badge.textContent = s.connection || 'stopped';
   const hp = Number.isFinite(s.health) ? s.health : null, fd = Number.isFinite(s.food) ? s.food : null;
   r.hp.style.width = hp === null ? '0%' : `${Math.max(0, Math.min(100, hp * 5))}%`; r.hpT.textContent = hp === null ? '-' : `${Math.round(hp * 10) / 10}/20`;
@@ -335,16 +339,28 @@ function utter(text, voice) {
   u.rate = Number.isFinite(voice.rate) ? voice.rate : 1; u.pitch = Number.isFinite(voice.pitch) ? voice.pitch : 1;
   return u;
 }
+let ttsId = 0, ttsWatchdog = null, curUtter = null;
 function pumpTts() {
   if (speaking || !ttsQueue.length) return;
   const item = ttsQueue.shift(); speaking = true;
   voice.onTtsStart();
-  const u = utter(item.text, item.voice);
-  const done = () => { speaking = false; if (ttsQueue.length) pumpTts(); else voice.onTtsIdle(); };
+  const myId = ++ttsId;
+  const u = utter(item.text, item.voice); curUtter = u;
+  const done = () => {
+    if (myId !== ttsId) return;
+    clearTimeout(ttsWatchdog); curUtter = null; speaking = false;
+    if (ttsQueue.length) pumpTts(); else voice.onTtsIdle();
+  };
   u.onend = done; u.onerror = done;
+  // watchdog: a dropped onend must not wedge TTS (or hands-free listening)
+  ttsWatchdog = setTimeout(() => { try { synth.cancel(); } catch { /* */ } done(); }, item.text.length * 90 + 5000);
   try { synth.speak(u); } catch { done(); }
 }
-function stopSpeaking() { ttsQueue.length = 0; if (synth) synth.cancel(); speaking = false; voice.onTtsIdle(); }
+function stopSpeaking() {
+  ttsQueue.length = 0; ttsId++; clearTimeout(ttsWatchdog); curUtter = null;
+  if (synth) { try { synth.cancel(); } catch { /* */ } }
+  const was = speaking; speaking = false; if (was) voice.onTtsIdle();
+}
 function previewVoice(name, rate, pitch, who) {
   if (!synth) { toast('Speech synthesis not supported in this browser', 'error'); return; }
   synth.cancel(); synth.speak(utter(`Hello, I am ${who || 'your bot'}. Let's go mining.`, { name, rate, pitch }));
@@ -353,14 +369,15 @@ function previewVoice(name, rate, pitch, who) {
 // ---------- voice: STT ----------
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const voice = (() => {
-  let rec = null, mode = 'off'; // off | ptt | hands
-  let pressAt = 0, toggled = false, wantRestart = false, pausedForTts = false, ttsBusy = false;
-  const msg = $('#voiceMsg'), interim = $('#interim'), mic = $('#pttBtn'), hf = $('#handsFree');
+  let rec = null, mode = 'off'; // off | ptt | hands | test
+  let pressAt = 0, toggled = false, wantRestart = false, ttsBusy = false;
+  let releaseTimer = null, restartTimer = null, errDelay = 0;
+  const msg = $('#voiceMsg'), interim = $('#interim'), mic = $('#pttBtn'), hf = $('#handsFree'), state = $('#voiceState');
   const supported = !!SR && window.isSecureContext;
   function notice(t) { msg.textContent = t; msg.classList.toggle('hidden', !t); }
   if (!SR) notice('Speech recognition is not available in this browser. Use Chrome or Edge.');
   else if (!window.isSecureContext) notice(`Microphone needs a secure context. Open this page over https (${location.protocol}//${location.host} is not secure), accept the certificate warning, or in Chrome add this origin to chrome://flags/#unsafely-treat-insecure-origin-as-secure.`);
-  mic.disabled = hf.disabled = !supported;
+  mic.disabled = hf.disabled = $('#testMic').disabled = !supported;
 
   const wakeExtra = $('#wakeExtra'); wakeExtra.value = lsGet('wakeExtra', '');
   wakeExtra.onchange = () => lsSet('wakeExtra', wakeExtra.value);
@@ -373,16 +390,15 @@ const voice = (() => {
       d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
     return d[a.length][b.length];
   }
-  // returns {target, text} or null
   function parseWake(raw) {
-    let words = norm(raw).split(' ').filter(Boolean);
+    const words = norm(raw).split(' ').filter(Boolean);
     while (words.length && ['hey', 'hi', 'hello', 'ok', 'okay', 'yo'].includes(words[0])) words.shift();
     const cands = [];
     for (const b of S.bots.values()) {
       const base = norm(b.name.replace(/_/g, ' ')); const user = norm(b.username.replace(/_/g, ' '));
       for (const c of new Set([base, user, base.split(' ')[0]])) if (c) cands.push({ phrase: c, target: b.name });
     }
-    for (const c of ['everyone', 'all bots', 'everybody', 'all']) cands.push({ phrase: c, target: 'all' });
+    for (const c of ['everyone', 'all bots', 'everybody']) cands.push({ phrase: c, target: 'all' });
     for (const w of wakeExtra.value.split(',').map(norm).filter(Boolean)) cands.push({ phrase: w, target: null });
     let best = null;
     for (const c of cands) {
@@ -393,67 +409,91 @@ const voice = (() => {
       if (dist <= tol && (!best || n > best.n || (n === best.n && dist < best.dist))) best = { n, dist, target: c.target };
     }
     if (!best) return null;
-    const rest = words.slice(best.n).join(' ').replace(/^(,|:)\s*/, '').trim();
-    return { target: best.target, text: rest };
+    return { target: best.target, text: words.slice(best.n).join(' ').trim() };
   }
 
-  function build() {
-    const r = new SR(); r.lang = lsGet('sttLang', navigator.language || 'en-US'); r.interimResults = true; r.continuous = mode === 'hands';
+  function ui() {
+    mic.classList.toggle('live', mode === 'ptt'); mic.textContent = mode === 'ptt' ? 'Listening' : 'Mic';
+    hf.classList.toggle('on', mode === 'hands'); hf.textContent = `Hands-free: ${mode === 'hands' ? 'on' : 'off'}`;
+    let t = 'Mic: off', cls = 'off';
+    if (mode !== 'off') { if (ttsBusy) { t = 'Mic: paused while speaking'; cls = 'wait'; } else { t = `Mic: listening (${mode === 'hands' ? 'hands-free' : mode === 'test' ? 'test' : 'push-to-talk'})`; cls = 'on'; } }
+    state.textContent = t; state.className = `ws ${cls}`;
+  }
+  function showInterim(t) { interim.textContent = t; interim.classList.toggle('hidden', !t); }
+  function startRec() {
+    clearTimeout(restartTimer);
+    if (mode === 'off' || ttsBusy) return;
+    const r = new SR(); rec = r;
+    r.lang = lsGet('sttLang', navigator.language || 'en-US'); r.interimResults = true; r.continuous = mode === 'hands';
     r.onresult = (e) => {
-      let interimT = '';
+      if (r !== rec) return;
+      errDelay = 0; let interimT = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i]; const t = res[0].transcript;
         if (res.isFinal) finalText(t); else interimT += t;
       }
-      interim.textContent = interimT ? `Hearing: ${interimT}` : ''; interim.classList.toggle('hidden', !interimT);
+      showInterim(interimT ? `Hearing: ${interimT}` : '');
     };
     r.onerror = (e) => {
+      if (r !== rec) return;
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { notice('Microphone permission denied. Allow it in the browser address bar.'); stop(); }
-      else if (e.error === 'audio-capture') { notice('No microphone found.'); stop(); }
-      else if (e.error === 'network') { notice('Speech recognition needs internet access (Chrome sends audio to Google).'); }
+      else if (e.error === 'network' || e.error === 'audio-capture') {
+        errDelay = Math.min(errDelay ? errDelay * 2 : 1000, 30000);
+        notice(e.error === 'network' ? `Speech recognition network error (Chrome needs internet for it). Retrying in ${errDelay / 1000}s.` : `Microphone problem (audio-capture). Retrying in ${errDelay / 1000}s.`);
+      }
     };
     r.onend = () => {
-      interim.classList.add('hidden');
-      if (wantRestart && !pausedForTts && mode !== 'off') { setTimeout(() => { if (wantRestart && !pausedForTts) startRec(); }, 250); }
-      else if (mode === 'ptt' && !wantRestart) setMicUi();
+      if (r !== rec) return;
+      rec = null; showInterim('');
+      if (mode === 'test' || (mode === 'ptt' && !wantRestart)) { if (mode === 'test') stop(); return; }
+      if (wantRestart && mode !== 'off' && !ttsBusy) restartTimer = setTimeout(startRec, errDelay || 250);
     };
-    return r;
+    try { r.start(); } catch { /* already started */ }
   }
-  function startRec() { try { rec = build(); rec.start(); } catch { /* already started */ } }
   function finalText(t) {
     t = t.trim(); if (!t) return;
+    if (mode === 'test') { toast(`Heard: "${t}"`, 'ok', 6000); return; }
     if (mode === 'hands') {
       const w = parseWake(t);
-      if (!w) { interim.textContent = `Ignored (no wake word): ${t}`; interim.classList.remove('hidden'); setTimeout(() => interim.classList.add('hidden'), 2500); return; }
+      if (!w) { showInterim(`Ignored (no wake word): ${t}`); setTimeout(() => showInterim(''), 2500); return; }
       if (!w.text) return;
       if (w.target) $('#target').value = w.target;
       sendChat(w.text, 'voice');
     } else sendChat(t, 'voice');
   }
-  function setMicUi() {
-    mic.classList.toggle('live', mode === 'ptt'); mic.textContent = mode === 'ptt' ? 'Listening' : 'Mic';
-    hf.classList.toggle('on', mode === 'hands'); hf.textContent = `Hands-free: ${mode === 'hands' ? 'on' : 'off'}`;
+  function stop() {
+    wantRestart = false; mode = 'off'; toggled = false; errDelay = 0;
+    clearTimeout(releaseTimer); clearTimeout(restartTimer);
+    const r = rec; rec = null; try { r && r.abort(); } catch { /* */ }
+    ui(); showInterim('');
   }
-  function stop() { wantRestart = false; mode = 'off'; toggled = false; try { rec && rec.stop(); } catch { /* */ } setMicUi(); interim.classList.add('hidden'); }
-  function begin(m) { stop(); if (!supported) return; mode = m; wantRestart = true; if (!ttsBusy) startRec(); else pausedForTts = true; setMicUi(); }
+  function begin(m) { stop(); if (!supported) return; notice(''); mode = m; wantRestart = m !== 'test'; ui(); startRec(); }
 
   mic.addEventListener('pointerdown', (e) => {
     e.preventDefault(); if (!supported) return;
+    clearTimeout(releaseTimer);
     if (mode === 'ptt' && toggled) { stop(); return; }
-    if (mode === 'hands') stop();
     stopSpeaking(); pressAt = Date.now(); begin('ptt'); toggled = false;
   });
   const release = () => {
     if (mode !== 'ptt' || toggled) return;
-    if (Date.now() - pressAt > 450) { wantRestart = false; try { rec.stop(); } catch { /* */ } setTimeout(() => { if (mode === 'ptt') { mode = 'off'; setMicUi(); } }, 1500); }
-    else toggled = true; // short click: keep listening until clicked again
+    if (Date.now() - pressAt > 450) {
+      wantRestart = false; try { rec && rec.stop(); } catch { /* */ }
+      clearTimeout(releaseTimer); releaseTimer = setTimeout(() => { if (mode === 'ptt') stop(); }, 1500);
+    } else toggled = true;
   };
   mic.addEventListener('pointerup', release); mic.addEventListener('pointerleave', () => { if (Date.now() - pressAt > 450) release(); });
   hf.addEventListener('click', () => { if (mode === 'hands') stop(); else begin('hands'); });
+  $('#testMic').addEventListener('click', () => { if (mode === 'test') stop(); else { begin('test'); toast('Say something...'); } });
+  $('#testVoice').addEventListener('click', () => {
+    if (!synth) { toast('Speech synthesis not supported in this browser', 'error'); return; }
+    previewVoice('', 1, 1, 'the dashboard');
+  });
+  ui();
 
   return {
-    onTtsStart() { ttsBusy = true; if (mode !== 'off' && rec) { pausedForTts = true; try { rec.abort(); } catch { /* */ } } },
-    onTtsIdle() { ttsBusy = false; if (pausedForTts) { pausedForTts = false; if (mode !== 'off' && wantRestart) setTimeout(startRec, 400); } },
+    onTtsStart() { ttsBusy = true; clearTimeout(restartTimer); const r = rec; rec = null; try { r && r.abort(); } catch { /* */ } ui(); },
+    onTtsIdle() { ttsBusy = false; ui(); if (mode !== 'off' && wantRestart) restartTimer = setTimeout(startRec, 400); },
   };
 })();
 
@@ -474,6 +514,7 @@ const FIELDS = [
   { title: 'Agent behaviour', fields: [
     { p: 'agent.autonomous', l: 'Autonomous by default', t: 'bool' },
     { p: 'agent.idleThinkSeconds', l: 'Idle think interval (s)', t: 'number' },
+    { p: 'agent.pauseWhenOwnerAway', l: 'Pause idle check-ins while no owner is online (saves API cost)', t: 'bool' },
     { p: 'agent.maxStepsPerTurn', l: 'Max steps per turn', t: 'number' },
     { p: 'agent.historyCompactAt', l: 'Compact history at (messages)', t: 'number' },
     { p: 'agent.actionTimeoutSeconds', l: 'Action timeout (s)', t: 'number' },
@@ -506,6 +547,7 @@ let form = null, original = null, settingsDirty = false, lmModels = [];
 const inputs = new Map();
 
 function markDirty() { settingsDirty = true; $('#saveMsg').textContent = 'Unsaved changes'; }
+const MINS = { 'agent.idleThinkSeconds': [5], 'agent.maxStepsPerTurn': [1, 50], 'agent.actionTimeoutSeconds': [10], 'agent.historyCompactAt': [10], 'agent.stuckSeconds': [3], 'reconnect.initialDelaySeconds': [1], 'reconnect.maxDelaySeconds': [1], 'server.port': [1, 65535], 'web.port': [1, 65535], 'llm.anthropic.maxTokens': [256], 'llm.lmstudio.maxTokens': [256], 'llm.lmstudio.contextTokens': [2048], 'llm.lmstudio.temperature': [0, 2], 'agent.chatMaxLength': [20, 256] };
 function fieldEl(f) {
   const val = getPath(form, f.p);
   let input;
@@ -514,7 +556,7 @@ function fieldEl(f) {
     input = h('input', { type: 'checkbox', checked: !!val, onchange: (e) => upd(e.target.checked) });
     return h('label', { class: 'field inline' }, input, h('span', { text: f.l }), f.help ? h('span', { class: 'help', text: f.help }) : null);
   }
-  if (f.t === 'number') input = h('input', { type: 'number', step: 'any', value: val ?? '', oninput: (e) => { const n = parseFloat(e.target.value); if (Number.isFinite(n)) upd(n); } });
+  if (f.t === 'number') input = h('input', { type: 'number', step: 'any', min: MINS[f.p]?.[0], max: MINS[f.p]?.[1], value: val ?? '', oninput: (e) => { const n = parseFloat(e.target.value); if (Number.isFinite(n)) upd(n); } });
   else if (f.t === 'select') input = h('select', { onchange: (e) => upd(e.target.value) }, f.o.map((o) => h('option', { value: o, text: o, selected: o === val })));
   else if (f.t === 'list') input = h('textarea', { rows: 3, oninput: (e) => upd(e.target.value.split('\n').map((x) => x.trim()).filter(Boolean)) }), input.value = (val || []).join('\n');
   else if (f.t === 'password') input = h('input', { type: 'password', autocomplete: 'new-password', placeholder: form.web.passwordSet ? 'set (unchanged)' : 'not set', oninput: (e) => upd(e.target.value) });
@@ -669,9 +711,9 @@ function renderCharEditor() {
   box.append(
     h('h3', { text: isNew ? 'New character' : d.name }),
     h('div', { class: 'fgrid' },
-      fld('Name (id)', h('input', { type: 'text', value: d.name, disabled: !isNew, maxlength: 32, oninput: (e) => { d.name = e.target.value; if (isNew && !d._userTouched) { d.username = e.target.value.slice(0, 16); $('#cUser').value = d.username; } } }), isNew ? 'Letters, digits, _ or -' : 'Cannot be renamed'),
-      fld('Minecraft username', h('input', { id: 'cUser', type: 'text', value: d.username, maxlength: 16, oninput: (e) => { d.username = e.target.value; d._userTouched = true; } }), '3-16 letters/digits/_ (restart needed)'),
-      h('label', { class: 'field inline' }, h('input', { type: 'checkbox', checked: d.enabled !== false, onchange: (e) => { d.enabled = e.target.checked; } }), 'Enabled (started with "Start all")')),
+      fld('Name (id)', h('input', { type: 'text', value: d.name, disabled: !isNew, maxlength: 16, minlength: 3, pattern: '[A-Za-z0-9_]{3,16}', required: true, oninput: (e) => { d.name = e.target.value; if (isNew && !d._userTouched) { d.username = e.target.value.slice(0, 16); $('#cUser').value = d.username; } } }), isNew ? '3-16 letters, digits or _ (no spaces)' : 'Cannot be renamed'),
+      fld('Minecraft username', h('input', { id: 'cUser', type: 'text', value: d.username, maxlength: 16, minlength: 3, pattern: '[A-Za-z0-9_]{3,16}', required: true, oninput: (e) => { d.username = e.target.value; d._userTouched = true; } }), '3-16 letters, digits or _'),
+      h('label', { class: 'field inline' }, h('input', { type: 'checkbox', checked: d.enabled !== false, onchange: (e) => { d.enabled = e.target.checked; } }), 'Enabled (auto-start at launch; disabled bots stay listed and can still be started)')),
     fld('Personality', h('textarea', { rows: 4, oninput: (e) => { d.personality = e.target.value; }, value: d.personality })),
     fld('Default goal', h('textarea', { rows: 3, oninput: (e) => { d.defaultGoal = e.target.value; }, value: d.defaultGoal })),
     h('h4', { text: 'LLM override' }),
@@ -686,12 +728,14 @@ function renderCharEditor() {
       h('div', { class: 'field' }, h('span', { class: 'lbl', text: 'Preview' }), h('button', { class: 'small', text: 'Preview voice', onclick: () => previewVoice(d.voice.name, d.voice.rate, d.voice.pitch, d.name) }))),
     h('div', { class: 'savebar' },
       h('button', { class: 'primary', text: isNew ? 'Create character' : 'Save character', onclick: guard(async () => {
+        const re = /^[A-Za-z0-9_]{3,16}$/;
+        if (!re.test(d.name) || !re.test(d.username)) { toast('Name and username must be 3-16 letters, digits or underscore', 'error'); return; }
         const body = clone(d); delete body._userTouched;
         const r = isNew ? await api('POST', '/api/characters', body) : await api('PUT', `/api/characters/${encodeURIComponent(d.name)}`, body);
         S.characters = r.characters; S.settings = r.settings; S.bots = new Map(r.bots.map((b) => [b.name, b]));
         editingChar = d.name; if (!settingsDirty) renderSettingsForm();
         renderBots(); renderTargets(); renderCharList(); refreshMemBots();
-        toast(r.restartNeeded ? 'Saved - restart this bot for username/enabled/LLM changes' : 'Character saved', 'ok');
+        toast('Saved (bot will reconnect if it was running and the username/LLM changed)', 'ok');
       }) }),
       isNew ? null : h('button', { class: 'danger', text: 'Delete', onclick: guard(async () => {
         if (!confirm(`Delete character ${d.name}? Its memory file is kept.`)) return;
@@ -715,35 +759,36 @@ const loadMemory = guard(async () => {
   const r = await api('GET', `/api/memory/${encodeURIComponent(n)}`);
   memData = r.memory || {}; renderMemory();
 });
-function summarize(v) {
-  if (typeof v === 'string') return v;
-  if (isObj(v)) {
-    const t = v.text ?? v.fact ?? v.summary ?? v.note;
-    const rest = Object.entries(v).filter(([k]) => !['text', 'fact', 'summary', 'id'].includes(k)).map(([k, x]) => `${k}: ${typeof x === 'object' ? JSON.stringify(x) : x}`).join(', ');
-    return [t, rest].filter(Boolean).join(' - ');
-  }
-  return String(v);
+const fmtDate = (ts) => { if (!ts) return ''; const d = new Date(ts); return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString(); };
+const coord = (o) => (Number.isFinite(o?.x) ? `${Math.round(o.x)}, ${Math.round(o.y)}, ${Math.round(o.z)}${o.dimension ? ` (${o.dimension})` : ''}` : '');
+async function delEntry(section, key) {
+  const n = $('#memBot').value;
+  const r = await api('DELETE', `/api/memory/${encodeURIComponent(n)}/${section}/${encodeURIComponent(key)}`);
+  memData = r.memory || {}; renderMemory(); $('#memMsg').textContent = `Deleted ${fmtTime()}`;
 }
 function renderMemory() {
   const box = $('#memView'); box.textContent = '';
   $('#memRaw').value = JSON.stringify(memData, null, 2);
-  const keys = Object.keys(memData);
-  if (!keys.length) box.append(h('p', { class: 'muted', text: 'Memory is empty.' }));
-  for (const k of keys) {
-    const v = memData[k]; const sec = h('div', { class: 'memsec' }, h('h4', { text: k }));
-    const entries = Array.isArray(v) ? v.map((x, i) => [i, x]) : isObj(v) ? Object.entries(v) : null;
-    if (!entries) sec.append(h('div', { class: 'memitem' }, h('span', { text: String(v) })));
-    else if (!entries.length) sec.append(h('div', { class: 'muted', text: '(none)' }));
-    else for (const [i, x] of entries) {
-      sec.append(h('div', { class: 'memitem' },
-        h('span', { text: Array.isArray(v) ? summarize(x) : `${i}: ${summarize(x)}` }),
-        h('button', { class: 'small danger', text: 'Delete', onclick: guard(async () => {
-          if (Array.isArray(v)) v.splice(i, 1); else delete v[i];
-          await saveMem();
-        }) })));
-    }
-    box.append(sec);
+  const sec = (title, rows, empty = '(none)') => {
+    const el = h('div', { class: 'memsec' }, h('h4', { text: title }));
+    if (!rows.length) el.append(h('div', { class: 'muted', text: empty }));
+    for (const r of rows) el.append(r);
+    box.append(el);
+  };
+  const row = (parts, section, key) => h('div', { class: 'memitem' }, h('span', null, ...parts),
+    section ? h('button', { class: 'small danger', text: 'Delete', onclick: guard(() => delEntry(section, key)) }) : null);
+  const dim = (t) => h('span', { class: 'muted', text: t });
+  const m = memData || {};
+  sec('Facts', (Array.isArray(m.facts) ? m.facts : []).map((f) => row([dim(`#${f.id} `), f.text ?? '', dim(f.ts ? `  ${fmtDate(f.ts)}` : '')], 'facts', f.id)));
+  sec('Places', Object.entries(isObj(m.places) ? m.places : {}).map(([k, p]) => row([h('b', { text: p.name || k }), ` ${coord(p)}`, p.note ? dim(` - ${p.note}`) : '', dim(p.ts ? `  ${fmtDate(p.ts)}` : '')], 'places', k)));
+  sec('Session summaries', (Array.isArray(m.sessionSummaries) ? m.sessionSummaries : []).map((x, i) => row([dim(`${fmtDate(x.ts)}  `), typeof x === 'string' ? x : x.text ?? ''], 'sessionSummaries', i)));
+  sec('Deaths', (Array.isArray(m.deaths) ? m.deaths : []).map((x, i) => row([dim(`${fmtDate(x.ts)}  `), `${coord(x)} - ${x.cause || 'unknown'}`], 'deaths', i)));
+  if (isObj(m.stats)) {
+    sec('Stats', [row([`Sessions: ${m.stats.sessions ?? 0}`, dim(`   first seen ${fmtDate(m.stats.firstSeen)}   last seen ${fmtDate(m.stats.lastSeen)}`)])]);
   }
+  const known = new Set(['version', 'facts', 'places', 'sessionSummaries', 'deaths', 'stats']);
+  const extra = Object.keys(m).filter((k) => !known.has(k));
+  if (extra.length) sec('Other (edit via raw JSON)', extra.map((k) => row([`${k}: ${JSON.stringify(m[k])}`])));
 }
 async function saveMem() {
   const n = $('#memBot').value;
@@ -754,6 +799,7 @@ $('#memBot').onchange = loadMemory; $('#memReload').onclick = loadMemory;
 $('#memSaveRaw').onclick = guard(async () => {
   let o; try { o = JSON.parse($('#memRaw').value); } catch (e) { toast(`Invalid JSON: ${e.message}`, 'error'); return; }
   if (!isObj(o)) { toast('Memory must be a JSON object', 'error'); return; }
+  if (!confirm('This replaces the bot\'s ENTIRE memory with this JSON. Continue?')) return;
   memData = o; await saveMem(); toast('Memory saved', 'ok');
 });
 $('#memClear').onclick = guard(async () => {
@@ -785,6 +831,8 @@ function addLog(l) {
 $('#logLevel').onchange = $('#logBot').onchange = rebuildLogs;
 $('#logPause').onclick = () => { logPaused = !logPaused; if (!logPaused) { pausedCount = 0; $('#logPause').textContent = 'Pause'; rebuildLogs(); } else $('#logPause').textContent = 'Resume'; };
 $('#logClear').onclick = () => { logs.length = 0; rebuildLogs(); };
+
+$('#firstRunLink').addEventListener('click', (e) => { e.preventDefault(); selectTab('settings'); });
 
 // ---------- boot ----------
 (async function boot() {

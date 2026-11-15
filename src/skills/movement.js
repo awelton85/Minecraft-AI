@@ -1,7 +1,7 @@
 // Movement skills.
 import {
   SkillError, goals, Vec3, moveTo, goNear, checkAbort, sleep, fmtPos, vecFrom, numArg, intArg, findPlayerEntity,
-  playerExists, stopEverything, isSolid, isAir, isLiquid, blockAtSafe, feetPos, towerUp, digBlock, findPlaceableJunk, getMovements,
+  playerExists, stopEverything, isSolid, isAir, isLiquid, blockAtSafe, feetPos, towerUp, inHole, digBlock, findPlaceableJunk, getMovements,
 } from './util.js';
 
 const visited = new WeakMap(); // bot -> Set of 32x32 cells already explored
@@ -226,14 +226,21 @@ export const movementSkills = [
     params: { type: 'object', properties: {}, additionalProperties: false },
     async run(ctx) {
       const bot = ctx.bot;
-      const sky = (b) => b && typeof b.skyLight === 'number' && b.skyLight >= 14;
+      const openAbove = (p) => {
+        for (let dy = 1; dy <= 30; dy++) {
+          const b = blockAtSafe(bot, p.offset(0, dy, 0));
+          if (isSolid(b) && !/leaves/.test(b.name)) return false;
+        }
+        return true;
+      };
+      const sky = (b) => b && ((typeof b.skyLight === 'number' && b.skyLight >= 12) || openAbove(b.position));
       const standable = (p) => {
         const below = blockAtSafe(bot, p.offset(0, -1, 0));
         const here = blockAtSafe(bot, p);
         const up = blockAtSafe(bot, p.offset(0, 1, 0));
-        return isSolid(below) && !isLiquid(below) && isAir(here) && isAir(up) && sky(here);
+        return isSolid(below) && !isLiquid(below) && isAir(here) && isAir(up) && sky(here) && !inHole(bot, p);
       };
-      const atSurface = () => standable(feetPos(bot)) || (sky(blockAtSafe(bot, feetPos(bot))) && !isLiquid(blockAtSafe(bot, feetPos(bot))) && isSolid(blockAtSafe(bot, feetPos(bot).offset(0, -1, 0))));
+      const atSurface = () => !inHole(bot) && (standable(feetPos(bot)) || (sky(blockAtSafe(bot, feetPos(bot))) && !isLiquid(blockAtSafe(bot, feetPos(bot))) && isSolid(blockAtSafe(bot, feetPos(bot).offset(0, -1, 0)))));
       if (atSurface()) return `Already on the surface at ${fmtPos(bot.entity.position)}.`;
       const startY = bot.entity.position.y;
       const air = new Set(['air', 'cave_air']);

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { renameRetry } from './memory/MemoryStore.js';
 
 const CHARACTER_DEFAULTS = {
   name: '',
@@ -30,13 +31,15 @@ export function deepMerge(base, patch) {
 }
 
 /** Characters must have filesystem- and Minecraft-safe names. */
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 export function validCharacterName(name) {
-  return typeof name === 'string' && /^[A-Za-z0-9_]{3,16}$/.test(name);
+  return typeof name === 'string' && /^[A-Za-z0-9_]{3,16}$/.test(name) && !WINDOWS_RESERVED.test(name);
 }
 
 async function readJson(file, fallback) {
   try {
-    return JSON.parse(await fs.readFile(file, 'utf8'));
+    // Strip a UTF-8 BOM (Notepad / PowerShell 5 add one).
+    return JSON.parse((await fs.readFile(file, 'utf8')).replace(/^\uFEFF/, ''));
   } catch (e) {
     if (e.code === 'ENOENT') return fallback;
     throw new Error(`Could not parse ${file}: ${e.message}`);
@@ -45,9 +48,9 @@ async function readJson(file, fallback) {
 
 async function writeJsonAtomic(file, data) {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
-  await fs.rename(tmp, file);
+  await renameRetry(tmp, file);
 }
 
 /**
@@ -109,6 +112,9 @@ export class SettingsManager extends EventEmitter {
     if (!profile || !validCharacterName(profile.name)) {
       throw new Error('Character name must be 3-16 characters: letters, digits or underscore');
     }
+    // Windows file names are case-insensitive: "Steve_AI" and "steve_ai" would share a file.
+    const clash = Object.keys(this.characters).find((n) => n !== profile.name && n.toLowerCase() === profile.name.toLowerCase());
+    if (clash) throw new Error(`A character named ${clash} already exists`);
     const merged = deepMerge(deepMerge(CHARACTER_DEFAULTS, this.characters[profile.name] || {}), profile);
     if (!merged.username) merged.username = merged.name;
     if (!validCharacterName(merged.username)) {

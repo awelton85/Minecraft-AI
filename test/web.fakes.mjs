@@ -20,8 +20,8 @@ export class FakeSettings extends EventEmitter {
     this.saved = [];
   }
   async saveSettings(patch) { this.saved.push(clone(patch)); merge(this.settings, patch); this.emit('change'); }
-  async saveCharacter(p) { this.characters[p.name] = clone(p); }
-  async deleteCharacter(n) { delete this.characters[n]; }
+  async saveCharacter(p) { this.characters[p.name] = clone(p); if (!this.settings.characters.includes(p.name)) this.settings.characters.push(p.name); }
+  async deleteCharacter(n) { delete this.characters[n]; this.settings.characters = this.settings.characters.filter((x) => x !== n); }
   secretsStatus() { return { anthropicApiKey: !!this.secrets.anthropicApiKey }; }
   async setSecret(k, v) { this.secrets[k] = v; }
   getSecret(k) { return this.secrets[k]; }
@@ -38,7 +38,7 @@ export class FakeManager extends EventEmitter {
   }
   #init(n) {
     this.state[n] = { connection: 'stopped', health: 20, food: 20, position: null, dimension: null, currentAction: null, goal: null, autonomous: true, provider: 'anthropic', model: 'claude-opus-5-5', lastError: null, reconnectAttempts: 0 };
-    this.memory[n] ??= { facts: [{ id: 1, text: 'Owner likes oak' }], places: [{ name: 'home', x: 1, y: 64, z: 2, dimension: 'overworld', note: 'base' }], sessionSummaries: ['Built a hut'], deaths: [] };
+    this.memory[n] ??= { version: 1, facts: [{ id: 1, text: 'Owner likes oak', ts: 1700000000000 }], places: { home: { name: 'home', x: 1, y: 64, z: 2, dimension: 'overworld', note: 'base', ts: 1700000000000 } }, sessionSummaries: [{ ts: 1700000000000, text: 'Built a hut' }], deaths: [{ ts: 1700000100000, x: 5, y: 12, z: 5, dimension: 'overworld', cause: 'lava' }], stats: { sessions: 3, firstSeen: 1700000000000, lastSeen: 1700000100000 } };
   }
   list() {
     for (const n of Object.keys(this.sm.characters)) if (!this.state[n]) this.#init(n);
@@ -63,6 +63,17 @@ export class FakeManager extends EventEmitter {
   setAutonomous(n, v) { this.calls.push(['setAutonomous', n, v]); this.#set(n, { autonomous: v }); }
   stopAction(n) { this.calls.push(['stopAction', n]); }
   setGoal(n, t) { this.calls.push(['setGoal', n, t]); this.#set(n, { goal: t }); }
+  resetConversation(n) { this.calls.push(['resetConversation', n]); }
+  async deleteMemoryEntry(n, section, key) {
+    this.calls.push(['deleteMemoryEntry', n, section, key]);
+    const m = this.memory[n]; const v = m?.[section];
+    if (Array.isArray(v)) {
+      const i = section === 'facts' ? v.findIndex((x) => String(x.id) === String(key)) : Number(key);
+      if (i < 0 || i >= v.length) return false; v.splice(i, 1); return true;
+    }
+    if (v && key in v) { delete v[key]; return true; }
+    return false;
+  }
   getMemory(n) { return clone(this.memory[n] ?? {}); }
   async saveMemory(n, o) { this.memory[n] = clone(o); }
   async clearMemory(n) { this.memory[n] = {}; }

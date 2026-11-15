@@ -26,9 +26,15 @@ export function checkAbort(ctx) {
 }
 
 /** Best-effort stop of everything physical the bot may be doing. */
+export function haltPathfinder(bot) {
+  // pathfinder.stop() only takes effect when the bot reaches the next path node; setGoal(null) clears the path immediately
+  try { bot.pathfinder?.setGoal(null); } catch { /* ignore */ }
+  try { bot.pathfinder?.stop(); } catch { /* ignore */ }
+}
+
 export function stopEverything(ctx) {
   const bot = ctx.bot;
-  try { bot.pathfinder?.stop(); } catch { /* ignore */ }
+  haltPathfinder(bot);
   try { bot.pvp?.forceStop?.(); } catch { /* ignore */ }
   try { bot.stopDigging(); } catch { /* ignore */ }
   try { bot.clearControlStates(); } catch { /* ignore */ }
@@ -442,8 +448,8 @@ export async function placeItemAt(ctx, item, pos, { stand = false } = {}) {
 
 // ---------------------------------------------------------------- movement
 
-function inHole(bot) {
-  const f = feetPos(bot);
+export function inHole(bot, at) {
+  const f = at ? new Vec3(Math.floor(at.x), Math.floor(at.y), Math.floor(at.z)) : feetPos(bot);
   let walls = 0;
   for (const d of [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)]) {
     if (isSolid(blockAtSafe(bot, f.plus(d))) && isSolid(blockAtSafe(bot, f.plus(d).offset(0, 1, 0)))) walls++;
@@ -562,7 +568,7 @@ export async function moveTo(ctx, goal, opts = {}) {
       bot.removeListener('path_stop', onStop);
       ctx.signal?.removeEventListener('abort', onAbort);
       if (err) {
-        try { bot.pathfinder.stop(); } catch { /* ignore */ }
+        haltPathfinder(bot);
         bot.clearControlStates();
         reject(err);
       } else resolve();

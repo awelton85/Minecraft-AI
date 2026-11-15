@@ -29,6 +29,17 @@ export class OpenAICompatProvider {
 
   async resolveModel() {
     if (this.model) return this.model;
+    // Prefer the model that is actually loaded (LM Studio REST API); /v1/models may list every
+    // downloaded model when just-in-time loading is on.
+    try {
+      const root = this.baseUrl.replace(/\/v1\/?$/, '');
+      const res = await fetch(`${root}/api/v0/models`, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const data = (await res.json()).data || [];
+        const loaded = data.find((m) => m.state === 'loaded' && m.type !== 'embeddings');
+        if (loaded) return (this.model = loaded.id);
+      }
+    } catch { /* not LM Studio, or older version */ }
     const models = await this.listModels();
     const chat = models.filter((m) => !/embed/i.test(m));
     if (!chat.length) throw new Error(`LM Studio at ${this.baseUrl} has no model loaded. Load a model in LM Studio (Developer tab) first.`);
@@ -54,7 +65,7 @@ export class OpenAICompatProvider {
           const body = calls.length ? `${m.text ? m.text + '\n' : ''}\`\`\`json\n${JSON.stringify({ tool_calls: calls })}\n\`\`\`` : m.text || '(no reply)';
           out.push({ role: 'assistant', content: body });
         } else {
-          const msg = { role: 'assistant', content: m.text || '' };
+          const msg = { role: 'assistant', content: m.text || (m.toolCalls?.length ? '' : '(no reply)') };
           if (m.toolCalls?.length) {
             msg.tool_calls = m.toolCalls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.args || {}) } }));
           }
@@ -78,8 +89,11 @@ export class OpenAICompatProvider {
     try {
       res = await this.request(system, messages, tools, mode, signal, toolChoice);
     } catch (err) {
-      // Some servers/models reject the `tools` parameter outright.
-      if (mode === 'native' && this.toolMode === 'auto' && err?.status === 400) {
+      // Some servers/models reject the `tools` parameter outright (but a 400 can also mean
+      // "context too long", which must not flip the mode).
+      const text = `${err?.message || ''} ${JSON.stringify(err?.error || '')}`;
+      if (mode === 'native' && this.toolMode === 'auto' && err?.status === 400 && /tool|function|template|jinja/i.test(text)
+        && !/context|too long|n_ctx|tokens/i.test(text)) {
         OpenAICompatProvider.jsonModeModels.add(this.model);
         mode = 'json';
         res = await this.request(system, messages, tools, mode, signal, toolChoice);
@@ -95,7 +109,7 @@ export class OpenAICompatProvider {
       id: c.id || `call_${Date.now()}_${i}`,
       name: c.function?.name,
       args: parseArgs(c.function?.arguments),
-    })).filter((c) => known.has(c.name));
+    })).filter((c) => c.name);
 
     if (!toolCalls.length) {
       const recovered = extractTextToolCalls(text, known);

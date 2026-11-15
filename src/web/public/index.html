@@ -29,6 +29,7 @@
       <button id="stopAll" class="danger">Stop all</button>
       <span class="muted" id="botsSummary"></span>
     </div>
+    <div id="firstRun" class="notice hidden" style="margin-bottom:12px">First run: no owner is set (or it is still "YourMinecraftName"). Bots only obey owners. <a href="#" id="firstRunLink">Set your Minecraft name in Settings -&gt; Owners</a>.</div>
     <div id="botCards" class="cards"></div>
   </section>
 
@@ -39,6 +40,9 @@
         <label class="chk"><input type="checkbox" id="ttsOn"> Speak bot replies</label>
         <button id="ttsStop" class="small">Stop speaking</button>
         <button id="chatClear" class="small">Clear</button>
+        <span id="voiceState" class="ws off"></span>
+        <button id="testMic" class="small" type="button">Test microphone</button>
+        <button id="testVoice" class="small" type="button">Test voice</button>
         <span id="botChips" class="chips"></span>
       </div>
       <div id="feed" class="feed" aria-live="polite"></div>
@@ -94,6 +98,7 @@
       <div id="memView"></div>
       <div class="mem-raw">
         <h3>Raw JSON</h3>
+        <p class="muted">Warning: saving replaces the bot's entire memory. Invalid shapes are rejected. Prefer the Delete buttons for single entries.</p>
         <textarea id="memRaw" spellcheck="false"></textarea>
         <button id="memSaveRaw" class="primary">Save JSON</button>
       </div>

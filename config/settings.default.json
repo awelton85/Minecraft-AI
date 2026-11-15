@@ -28,6 +28,7 @@
   "agent": {
     "autonomous": true,
     "idleThinkSeconds": 45,
+    "pauseWhenOwnerAway": true,
     "maxStepsPerTurn": 12,
     "historyCompactAt": 60,
     "actionTimeoutSeconds": 180,

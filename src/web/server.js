@@ -8,12 +8,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { validCharacterName } from '../config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COOKIE = 'mcai_token';
 const EVENTS = ['log', 'chat', 'speech', 'thought', 'status'];
-const NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
-const USERNAME_RE = /^[A-Za-z0-9_]{3,16}$/;
+const NAME_MSG = 'must be 3-16 letters, digits or underscore (A-Z a-z 0-9 _)';
 const LOG_BACKLOG = 500;
 const CHAT_BACKLOG = 200;
 
@@ -134,25 +134,39 @@ function checkEnums(patch, prefix = '') {
     else if (ENUMS[p] && !ENUMS[p].includes(v)) throw bad(`${p} must be one of ${ENUMS[p].join(', ')}`);
   }
 }
-function checkRanges(patch) {
-  const port = (v, n) => { if (v !== undefined && (!Number.isInteger(v) || v < 1 || v > 65535)) throw bad(`${n} must be a port 1-65535`); };
-  port(patch.server?.port, 'server.port');
-  port(patch.web?.port, 'web.port');
-  const pos = (v, n) => { if (v !== undefined && v < 0) throw bad(`${n} must be >= 0`); };
-  for (const [g, o] of Object.entries(patch)) {
-    if (g === 'agent' || g === 'reconnect' || g === 'llm') {
-      for (const [k, v] of Object.entries(o)) if (typeof v === 'number') pos(v, `${g}.${k}`);
-    }
+function checkRanges(patch, current) {
+  const merged = (path) => {
+    const v = path.split('.').reduce((a, k) => (a == null ? undefined : a[k]), patch);
+    return v !== undefined ? v : path.split('.').reduce((a, k) => (a == null ? undefined : a[k]), current);
+  };
+  const rules = [
+    ['server.port', 1, 65535, true], ['web.port', 1, 65535, true],
+    ['agent.idleThinkSeconds', 5], ['agent.maxStepsPerTurn', 1, 50], ['agent.actionTimeoutSeconds', 10],
+    ['agent.historyCompactAt', 10], ['agent.stuckSeconds', 3], ['agent.chatMaxLength', 20, 256],
+    ['reconnect.initialDelaySeconds', 1], ['reconnect.maxDelaySeconds', 1],
+    ['llm.anthropic.maxTokens', 256], ['llm.lmstudio.maxTokens', 256], ['llm.lmstudio.contextTokens', 2048],
+    ['llm.lmstudio.temperature', 0, 2],
+  ];
+  for (const [p, min, max, int] of rules) {
+    const raw = p.split('.').reduce((a, k) => (a == null ? undefined : a[k]), patch);
+    if (raw === undefined) continue;
+    if (int && !Number.isInteger(raw)) throw bad(`${p} must be a whole number`);
+    if (raw < min) throw bad(`${p} must be >= ${min}`);
+    if (max !== undefined && raw > max) throw bad(`${p} must be <= ${max}`);
+  }
+  if (patch.reconnect && (patch.reconnect.initialDelaySeconds !== undefined || patch.reconnect.maxDelaySeconds !== undefined) &&
+      merged('reconnect.maxDelaySeconds') < merged('reconnect.initialDelaySeconds')) {
+    throw bad('reconnect.maxDelaySeconds must be >= reconnect.initialDelaySeconds');
   }
 }
 
 function sanitizeProfile(p, { requireName } = {}) {
   if (!isObj(p)) throw bad('character must be an object');
   const out = {};
-  if (typeof p.name !== 'string' || !NAME_RE.test(p.name)) throw bad('name must be 1-32 letters, digits, _ or -');
+  if (!validCharacterName(p.name)) throw bad(`Character name ${NAME_MSG}`);
   out.name = p.name;
   const username = p.username ?? p.name;
-  if (typeof username !== 'string' || !USERNAME_RE.test(username)) throw bad('username must be 3-16 letters, digits or _');
+  if (!validCharacterName(username)) throw bad(`Minecraft username ${NAME_MSG}`);
   out.username = username;
   out.enabled = p.enabled === undefined ? true : !!p.enabled;
   for (const k of ['personality', 'defaultGoal']) {
@@ -205,6 +219,33 @@ export async function startWebServer({ settingsManager, manager, log, rootDir })
       if (!res.headersSent) res.status(status).json({ error: e.message || String(e) });
     }
   };
+
+  // ---- host / origin / content-type guards ----
+  const allowedHosts = () => {
+    const set = new Set(['localhost', '127.0.0.1', '::1', os.hostname().toLowerCase(), ...lanAddresses()]);
+    const wh = web().host; if (wh && wh !== '0.0.0.0' && wh !== '::') set.add(String(wh).toLowerCase());
+    return set;
+  };
+  const hostName = (hostHeader) => {
+    const m = String(hostHeader || '').toLowerCase().match(/^(\[[^\]]+\]|[^:]*)(?::\d+)?$/);
+    return m ? m[1].replace(/^\[|\]$/g, '') : '';
+  };
+  const hostOk = (req) => allowedHosts().has(hostName(req.headers.host));
+  app.use((req, res, next) => {
+    if (!hostOk(req)) return res.status(403).json({ error: 'Host not allowed (DNS rebinding protection). Use localhost, this machine\'s name or its LAN IP.' });
+    next();
+  });
+  app.use('/api', (req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD') return next();
+    const origin = req.headers.origin;
+    if (origin) {
+      let oh = ''; try { oh = new URL(origin).host; } catch { /* */ }
+      if (oh !== req.headers.host) return res.status(403).json({ error: 'Cross-origin request rejected' });
+    }
+    const ct = String(req.headers['content-type'] || '').toLowerCase();
+    if (!ct.startsWith('application/json')) return res.status(415).json({ error: 'Content-Type must be application/json' });
+    next();
+  });
 
   // ---- auth ----
   const api = express.Router();
@@ -273,6 +314,10 @@ export async function startWebServer({ settingsManager, manager, log, rootDir })
     if (typeof req.body?.value !== 'boolean') throw bad('value must be boolean');
     manager.setAutonomous(botName(req), req.body.value);
   }));
+  api.post('/bots/:name/reset-conversation', wrap(async (req) => {
+    if (typeof manager.resetConversation !== 'function') throw new HttpError(501, 'resetConversation not supported');
+    await manager.resetConversation(botName(req));
+  }));
   api.post('/bots/:name/goal', wrap((req) => {
     const t = req.body?.text;
     if (typeof t !== 'string' || t.length > 2000) throw bad('text must be a string (max 2000)');
@@ -298,7 +343,7 @@ export async function startWebServer({ settingsManager, manager, log, rootDir })
     if (patch.web) { patch.web = { ...patch.web }; delete patch.web.passwordSet; if (patch.web.password === undefined) delete patch.web.password; }
     validatePatch(patch, shape);
     checkEnums(patch);
-    checkRanges(patch);
+    checkRanges(patch, sm.settings);
     const before = JSON.parse(JSON.stringify(sm.settings));
     await sm.saveSettings(patch);
     const after = sm.settings;
@@ -335,35 +380,24 @@ export async function startWebServer({ settingsManager, manager, log, rootDir })
 
   // ---- characters ----
   api.get('/characters', wrap(() => ({ characters: characters() })));
-  const syncCharList = async (name, present) => {
-    const list = [...(sm.settings.characters || [])];
-    const has = list.includes(name);
-    if (present && !has) { list.push(name); await sm.saveSettings({ characters: list }); }
-    if (!present && has) { await sm.saveSettings({ characters: list.filter((n) => n !== name) }); }
-  };
   api.post('/characters', wrap(async (req) => {
     const p = sanitizeProfile(req.body);
     if (sm.characters?.[p.name]) throw new HttpError(409, `Character ${p.name} already exists`);
     await sm.saveCharacter(p);
-    await syncCharList(p.name, p.enabled);
     return { characters: characters(), settings: publicSettings(), bots: manager.list() };
   }));
   api.put('/characters/:name', wrap(async (req) => {
-    if (!NAME_RE.test(req.params.name) || !sm.characters?.[req.params.name]) throw new HttpError(404, 'Unknown character');
+    if (!validCharacterName(req.params.name) || !sm.characters?.[req.params.name]) throw new HttpError(404, 'Unknown character');
     const p = sanitizeProfile({ ...req.body, name: req.params.name });
     const old = sm.characters[req.params.name];
     await sm.saveCharacter(p);
-    await syncCharList(p.name, true);
-    const restartNeeded = old.username !== p.username || old.enabled !== p.enabled ||
-      old.llm?.provider !== p.llm.provider || old.llm?.model !== p.llm.model;
-    return { characters: characters(), settings: publicSettings(), bots: manager.list(), restartNeeded };
+    return { characters: characters(), settings: publicSettings(), bots: manager.list() };
   }));
   api.delete('/characters/:name', wrap(async (req) => {
     const n = req.params.name;
-    if (!NAME_RE.test(n) || !sm.characters?.[n]) throw new HttpError(404, 'Unknown character');
+    if (!validCharacterName(n) || !sm.characters?.[n]) throw new HttpError(404, 'Unknown character');
     try { if (botNames().includes(n)) await manager.stop(n); } catch { /* best effort */ }
     await sm.deleteCharacter(n);
-    await syncCharList(n, false);
     return { characters: characters(), settings: publicSettings(), bots: manager.list() };
   }));
 
@@ -375,6 +409,20 @@ export async function startWebServer({ settingsManager, manager, log, rootDir })
     await manager.saveMemory(botName(req), m);
     return { memory: manager.getMemory(req.params.name) };
   }));
+  const memEntry = (section, keyFn) => wrap(async (req) => {
+    const n = botName(req);
+    const key = keyFn(req);
+    if (typeof manager.deleteMemoryEntry !== 'function') throw new HttpError(501, 'deleteMemoryEntry not supported');
+    const ok = await manager.deleteMemoryEntry(n, section, key);
+    if (ok === false) throw new HttpError(404, 'Entry not found');
+    return { memory: manager.getMemory(n) };
+  });
+  const idx = (req) => { const i = Number(req.params.key); if (!Number.isInteger(i) || i < 0) throw bad('index must be a non-negative integer'); return i; };
+  const sid = (req) => { const k = req.params.key; if (!k || k.length > 200) throw bad('invalid key'); return k; };
+  api.delete('/memory/:name/facts/:key', memEntry('facts', sid));
+  api.delete('/memory/:name/places/:key', memEntry('places', sid));
+  api.delete('/memory/:name/sessionSummaries/:key', memEntry('sessionSummaries', idx));
+  api.delete('/memory/:name/deaths/:key', memEntry('deaths', idx));
   api.delete('/memory/:name', wrap(async (req) => {
     await manager.clearMemory(botName(req));
     return { memory: manager.getMemory(req.params.name) };
@@ -425,6 +473,7 @@ export async function startWebServer({ settingsManager, manager, log, rootDir })
     try {
       const url = new URL(req.url, 'http://x');
       if (url.pathname !== '/ws') { socket.destroy(); return; }
+      if (!hostOk(req)) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
       const origin = req.headers.origin;
       if (origin) {
         let oh; try { oh = new URL(origin).host; } catch { oh = ''; }
@@ -486,7 +535,7 @@ export async function startWebServer({ settingsManager, manager, log, rootDir })
   const addrs = wantHost === '0.0.0.0' || wantHost === '::' ? lanAddresses() : [];
   const urls = [`${scheme}://localhost:${port}`, ...addrs.map((a) => `${scheme}://${a}:${port}`)];
   if (wantHost !== '0.0.0.0' && wantHost !== '::' && wantHost !== '127.0.0.1' && wantHost !== 'localhost') urls.push(`${scheme}://${wantHost}:${port}`);
-  logTo(log, 'info', `Dashboard reachable at: ${urls.join('  ')}`);
+  for (const u of urls) logTo(log, 'info', `Dashboard: ${u}`);
   if (useHttps) logTo(log, 'info', 'Browser will warn about the self-signed certificate: choose Advanced -> Proceed.');
   if (!passwordRequired() && addrs.length) logTo(log, 'warn', 'Dashboard has no password and is reachable on the LAN. Set one in Settings -> Web.');
   const url = addrs[0] ? `${scheme}://${addrs[0]}:${port}` : `${scheme}://localhost:${port}`;

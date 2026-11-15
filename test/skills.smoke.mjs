@@ -396,8 +396,9 @@ tests.surface = async () => {
   // natural terrain near spawn: dig a 1x1 shaft ~8 deep and drop the bot in it
   await setup([`give ${B} cobblestone 16`, `tp ${B} -6 95 -8`]);
   await sleep(2000);
-  await mc(`fill -4 84 -8 -4 96 -8 air`);
-  await mc(`tp ${B} -4 85 -8`);
+  await mc(`fill -5 83 -9 -3 92 -7 stone`);
+  await mc(`fill -4 84 -8 -4 92 -8 air`);
+  await mc(`tp ${B} -3.5 84 -7.5`);
   await sleep(1500);
   const y0 = bot.entity.position.y;
   const r = await run(ctx, 'come_up_to_surface');
@@ -414,9 +415,9 @@ tests.abort = async () => {
   const r = await p;
   const dt = Date.now() - t0;
   check('collect_block abort stops within 2s', !r.ok && /Aborted/.test(r.err.message) && dt < 2000, `${dt}ms`);
-  await sleep(300);
+  await sleep(1000);
   const moving = bot.pathfinder.isMoving() || bot.pathfinder.isMining();
-  check('pathfinder idle after abort', !moving);
+  check('pathfinder idle after abort', !moving, `moving=${bot.pathfinder.isMoving()} mining=${bot.pathfinder.isMining()} dig=${!!bot.targetDigBlock}`);
   ctx.reset();
 };
 

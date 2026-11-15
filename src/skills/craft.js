@@ -139,9 +139,14 @@ async function ensureTable(ctx) {
   let table = findNearestBlock(ctx, 'crafting_table', 32);
   if (table) {
     if (bot.entity.position.distanceTo(table.position.offset(0.5, 0.5, 0.5)) > 3.8) {
-      await moveTo(ctx, new goals.GoalGetToBlock(table.position.x, table.position.y, table.position.z), { label: 'crafting table', timeoutMs: 40000 });
-    }
-    return { table, placed: false };
+      try {
+        await moveTo(ctx, new goals.GoalGetToBlock(table.position.x, table.position.y, table.position.z), { label: 'crafting table', timeoutMs: 40000 });
+        return { table, placed: false };
+      } catch (err) {
+        if (err.message === 'Aborted' || !findItem(bot, 'crafting_table')) throw err;
+        ctx.log?.(`nearby crafting table unreachable (${err.message}); placing my own`);
+      }
+    } else return { table, placed: false };
   }
   if (!findItem(bot, 'crafting_table')) return null;
   const pos = await placeNearby(ctx, 'crafting_table');

@@ -61,6 +61,13 @@ export class BotRunner {
     this.setState('stopped');
   }
 
+  /** Live profile edit (personality, goal, voice): no reconnect needed. */
+  updateProfile(profile) {
+    this.character = profile;
+    this.agent.character = profile;
+    this.emitStatus(true);
+  }
+
   async shutdown() {
     await this.stop();
     await this.agent.stop({ summarize: true });
@@ -95,7 +102,7 @@ export class BotRunner {
     let ended = false;
 
     const spawnTimeout = setTimeout(() => {
-      if (!bot.entity) {
+      if (this.bot === bot && !bot.entity) {
         this.log.warn('No spawn within 60s, retrying');
         bot.end('spawn timeout');
       }
@@ -110,15 +117,18 @@ export class BotRunner {
 
     bot.once('spawn', () => {
       clearTimeout(spawnTimeout);
+      if (this.bot !== bot) return; // stale bot from an earlier connection
       this.onSpawned(bot);
     });
     bot.on('kicked', (reason) => {
+      if (this.bot !== bot) return;
       const text = flattenReason(reason);
       this.lastError = `Kicked: ${text}`;
       this.log.warn(this.lastError);
       this._kickReason = text;
     });
     bot.on('error', (err) => {
+      if (this.bot !== bot) return;
       this.lastError = describeConnError(err, s);
       this.log.warn(`Connection error: ${this.lastError}`);
     });
@@ -126,24 +136,30 @@ export class BotRunner {
       if (ended) return;
       ended = true;
       clearTimeout(spawnTimeout);
-      this.onDisconnected(reason);
+      this.onDisconnected(bot, reason);
     });
   }
 
+  /** Ends the current connection. The bot object is detached first so its late events are ignored. */
   disconnect(reason) {
     const bot = this.bot;
     if (!bot) return;
+    this.bot = null;
+    clearInterval(this._statusTimer);
+    clearInterval(this._watchdog);
+    clearTimeout(this._stableTimer);
     try { bot.pathfinder?.stop(); } catch { /* ignore */ }
     try { bot.quit(reason); } catch { /* ignore */ }
     try { bot.end(reason); } catch { /* ignore */ }
   }
 
-  onDisconnected(reason) {
+  onDisconnected(bot, reason) {
+    if (this.bot !== bot) return; // an old connection finishing after a newer one started
     const wasConnected = this.state === 'connected';
     clearInterval(this._statusTimer);
     clearInterval(this._watchdog);
+    clearTimeout(this._stableTimer);
     this.agent.abortAction('disconnected');
-    if (this.bot) this.bot.removeAllListeners('chat');
     this.bot = null;
     if (!this.wantRunning) { this.setState('stopped'); return; }
 
@@ -169,8 +185,10 @@ export class BotRunner {
 
   onSpawned(bot) {
     this.mcData = minecraftData(bot.version);
-    this.reconnectAttempts = 0;
     this.lastError = null;
+    // Only forget the back-off once the connection has proven stable (a kick right after spawn,
+    // e.g. duplicate login, must keep backing off).
+    this._stableTimer = setTimeout(() => { if (this.bot === bot) this.reconnectAttempts = 0; }, 30_000);
     this.setState('connected');
     this.log.info(`Spawned in world (Minecraft ${bot.version}) at ${fmtPos(bot.entity.position)}`);
 
@@ -239,25 +257,32 @@ export class BotRunner {
       lastDefense = now;
       if (!attacker) return;
       if (bot.health <= 6) {
-        this.agent.notify(`DANGER: health ${Math.round(bot.health)}/20 and a ${attacker.name} is attacking you. Flee or heal now!`, { urgent: true });
+        this.agent.notify(`DANGER: health ${Math.round(bot.health)}/20 and a ${attacker.name} is attacking you. Flee or heal now!`, { abortAny: true });
         return;
       }
       if (r.selfDefense !== false && !this.agent.currentAction && bot.pvp && !bot.pvp.target) {
         this.log.info(`Defending against ${attacker.name}`);
         bot.pvp.attack(attacker);
-        setTimeout(() => { if (bot.pvp?.target === attacker && !attacker.isValid) bot.pvp.stop(); }, 15_000);
+        // Reflex fights are short; the agent decides about anything longer.
+        setTimeout(() => { if (bot.pvp?.target === attacker) bot.pvp.stop(); }, 15_000);
       }
-      this.agent.notify(`You are being attacked by a ${attacker.name} (health ${Math.round(bot.health)}/20).`, { urgent: true });
+      // Tell the agent at most every 20 s, so a long fight doesn't trigger an LLM call every hit.
+      if (now - (this._lastAttackNotice || 0) > 20_000) {
+        this._lastAttackNotice = now;
+        this.agent.notify(`You are being attacked by a ${attacker.name} (health ${Math.round(bot.health)}/20).`);
+      }
     });
   }
 
   setupChat(bot) {
     const me = this.character.username;
-    const owners = (this.settings.owners || []).map((o) => o.toLowerCase());
-    const accept = (username) => this.settings.listenToEveryone || owners.includes(username.toLowerCase()) || this.manager.isBotUsername(username);
+    // Read settings on every message so owner changes apply immediately.
+    const accept = (username) => this.settings.listenToEveryone
+      || (this.settings.owners || []).some((o) => o.toLowerCase() === username.toLowerCase())
+      || this.manager.isBotUsername(username);
 
     bot.on('chat', (username, message) => {
-      if (!username || username === me) return;
+      if (this.bot !== bot || !username || username === me) return;
       const isBot = this.manager.isBotUsername(username);
       // Every bot hears the chat, but only the first one forwards it to the dashboard feed.
       if (this.manager.isChatReporter(this.character.name)) {
@@ -268,7 +293,7 @@ export class BotRunner {
       this.agent.onChat(username, message);
     });
     bot.on('whisper', (username, message) => {
-      if (!username || username === me || !accept(username)) return;
+      if (this.bot !== bot || !username || username === me || !accept(username)) return;
       this.manager.emit('chat', { ts: Date.now(), bot: this.character.name, from: username, text: `(whisper) ${message}`, kind: 'player' });
       this.agent.onChat(username, message, { direct: true, isBot: this.manager.isBotUsername(username) });
     });
@@ -277,7 +302,7 @@ export class BotRunner {
   /** Sends chat as this bot. Splits long text, strips commands, paces messages to avoid spam kicks. */
   say(text) {
     const max = Math.min(250, this.settings.agent?.chatMaxLength || 240);
-    let clean = String(text || '').replace(/\s+/g, ' ').trim().replace(/^\/+/, '');
+    let clean = String(text || '').replace(/\s+/g, ' ').trim();
     if (!clean) return Promise.resolve();
     const voice = this.character.voice || {};
     this.manager.emit('speech', { ts: Date.now(), bot: this.character.name, text: clean, voice });
@@ -290,8 +315,11 @@ export class BotRunner {
       clean = clean.slice(cut).trim();
     }
     if (clean) parts.push(clean);
+    // The bot never runs commands: strip a leading '/' from every chunk, not just the first.
+    const safe = parts.map((p) => p.replace(/^[\s/]+/, '')).filter(Boolean).slice(0, 6);
+    this.agent.spokeThisTurn = true;
     this.chatQueue = this.chatQueue.then(async () => {
-      for (const p of parts.slice(0, 4)) {
+      for (const p of safe) {
         if (!this.isReady()) return;
         try { this.bot.chat(p); } catch (e) { this.log.warn('chat failed:', e.message); }
         await new Promise((r) => setTimeout(r, 1100));
@@ -352,7 +380,20 @@ function fmtPos(p) {
   return `${Math.round(p.x)} ${Math.round(p.y)} ${Math.round(p.z)}`;
 }
 
+/** Minecraft 1.20.3+ sends text components as NBT ({type, value}); convert to plain JSON. */
+function unNbt(n) {
+  if (!n || typeof n !== 'object') return n;
+  if (Array.isArray(n)) return n.map(unNbt);
+  if ('type' in n && 'value' in n && Object.keys(n).length <= 2) {
+    if (n.type === 'compound') return Object.fromEntries(Object.entries(n.value || {}).map(([k, v]) => [k, unNbt(v)]));
+    if (n.type === 'list') return (n.value?.value || []).map((v) => unNbt(n.value?.type ? { type: n.value.type, value: v } : v));
+    return n.value;
+  }
+  return n;
+}
+
 function flattenReason(reason) {
+  reason = unNbt(reason);
   if (typeof reason === 'string') {
     try { return flattenReason(JSON.parse(reason)); } catch { return reason; }
   }

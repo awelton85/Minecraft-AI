@@ -1,6 +1,16 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+/** fs.rename can fail transiently on Windows (antivirus/indexer holding the file). */
+export async function renameRetry(from, to) {
+  for (let i = 0; ; i++) {
+    try { return await fs.rename(from, to); } catch (e) {
+      if (i >= 5 || !['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) throw e;
+      await new Promise((r) => setTimeout(r, 100 * (i + 1)));
+    }
+  }
+}
+
 const EMPTY = () => ({
   version: 1,
   facts: [],            // [{ id, text, ts }]
@@ -11,6 +21,51 @@ const EMPTY = () => ({
 });
 
 const LIMITS = { facts: 200, sessionSummaries: 30, deaths: 20 };
+
+const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+const str = (v, max = 4000) => String(v ?? '').slice(0, max);
+
+/** Coerces anything (hand-edited file, dashboard JSON editor) into the expected shape. */
+export function normalizeMemory(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('memory must be a JSON object');
+  const out = EMPTY();
+  const arr = (v, name) => {
+    if (v === undefined || v === null) return [];
+    if (!Array.isArray(v)) throw new Error(`"${name}" must be an array`);
+    return v;
+  };
+  let id = 1;
+  out.facts = arr(raw.facts, 'facts')
+    .map((f) => (typeof f === 'string' ? { text: f } : f))
+    .filter((f) => f && typeof f === 'object' && String(f.text ?? '').trim())
+    .map((f) => ({ id: Number.isInteger(f.id) && f.id > 0 ? f.id : 0, text: str(f.text, 500).trim(), ts: num(f.ts) || Date.now() }));
+  const seen = new Set();
+  const taken = new Set(out.facts.map((f) => f.id).filter(Boolean));
+  for (const f of out.facts) {
+    if (!f.id || seen.has(f.id)) { while (taken.has(id)) id++; f.id = id; taken.add(id); }
+    seen.add(f.id);
+  }
+  if (raw.places !== undefined && raw.places !== null) {
+    if (typeof raw.places !== 'object' || Array.isArray(raw.places)) throw new Error('"places" must be an object');
+    for (const [k, p] of Object.entries(raw.places)) {
+      if (!p || typeof p !== 'object') continue;
+      const name = str(p.name || k, 60).trim();
+      if (!name) continue;
+      out.places[name.toLowerCase()] = { name, x: Math.round(num(p.x)), y: Math.round(num(p.y)), z: Math.round(num(p.z)),
+        dimension: str(p.dimension || 'overworld', 40), note: str(p.note, 200), ts: num(p.ts) || Date.now() };
+    }
+  }
+  out.sessionSummaries = arr(raw.sessionSummaries, 'sessionSummaries')
+    .map((x) => (typeof x === 'string' ? { text: x } : x))
+    .filter((x) => x && String(x.text ?? '').trim())
+    .map((x) => ({ ts: num(x.ts) || Date.now(), text: str(x.text) }));
+  out.deaths = arr(raw.deaths, 'deaths').filter((d) => d && typeof d === 'object')
+    .map((d) => ({ ts: num(d.ts) || Date.now(), x: Math.round(num(d.x)), y: Math.round(num(d.y)), z: Math.round(num(d.z)),
+      dimension: str(d.dimension || 'overworld', 40), cause: str(d.cause || 'unknown', 200) }));
+  const st = raw.stats && typeof raw.stats === 'object' ? raw.stats : {};
+  out.stats = { sessions: Math.max(0, Math.round(num(st.sessions))), firstSeen: st.firstSeen ? num(st.firstSeen) : null, lastSeen: st.lastSeen ? num(st.lastSeen) : null };
+  return out;
+}
 
 /**
  * Persistent per-character memory stored as JSON in data/memory/<name>.json.
@@ -27,8 +82,8 @@ export class MemoryStore {
 
   async load() {
     try {
-      const raw = JSON.parse(await fs.readFile(this.file, 'utf8'));
-      this.data = { ...EMPTY(), ...raw, stats: { ...EMPTY().stats, ...(raw.stats || {}) } };
+      const raw = JSON.parse((await fs.readFile(this.file, 'utf8')).replace(/^\uFEFF/, ''));
+      this.data = normalizeMemory(raw);
     } catch (e) {
       if (e.code !== 'ENOENT') {
         // Keep the unreadable file for the user instead of overwriting it.
@@ -42,8 +97,7 @@ export class MemoryStore {
 
   /** Replace the whole memory (dashboard raw editor). */
   async replace(obj) {
-    if (!obj || typeof obj !== 'object') throw new Error('memory must be an object');
-    this.data = { ...EMPTY(), ...obj };
+    this.data = normalizeMemory(obj); // throws on a bad shape before anything is replaced
     this._nextId = 1 + Math.max(0, ...this.data.facts.map((f) => f.id || 0));
     await this.save();
   }
@@ -59,12 +113,28 @@ export class MemoryStore {
     this._saveTimer = setTimeout(() => this.save().catch(() => {}), 1000);
   }
 
-  async save() {
+  /** Atomic write; saves are serialised so overlapping calls can't interleave. */
+  save() {
     clearTimeout(this._saveTimer);
-    await fs.mkdir(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(this.data, null, 2), 'utf8');
-    await fs.rename(tmp, this.file);
+    this._saving = (this._saving || Promise.resolve()).catch(() => {}).then(async () => {
+      await fs.mkdir(path.dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp`;
+      await fs.writeFile(tmp, JSON.stringify(this.data, null, 2), 'utf8');
+      await renameRetry(tmp, this.file);
+    });
+    return this._saving;
+  }
+
+  /** Dashboard: delete a single entry without replacing the whole memory. */
+  deleteEntry(section, key) {
+    let ok = false;
+    if (section === 'facts') ok = this.removeFact(String(Number(key)));
+    else if (section === 'places') ok = this.removePlace(key);
+    else if (section === 'sessionSummaries' || section === 'deaths') {
+      const i = Number(key);
+      if (Number.isInteger(i) && i >= 0 && i < this.data[section].length) { this.data[section].splice(i, 1); ok = true; this.scheduleSave(); }
+    } else throw new Error(`unknown memory section ${section}`);
+    return ok;
   }
 
   // ---- facts -------------------------------------------------------------

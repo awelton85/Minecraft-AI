@@ -35,10 +35,11 @@ async function main() {
 
   let shuttingDown = false;
   const shutdown = async (sig) => {
-    if (shuttingDown) process.exit(1);
+    // Exit code 0 tells start-bots.bat/.sh that this was intentional (no auto-restart).
+    if (shuttingDown) process.exit(0);
     shuttingDown = true;
     log.info(`${sig}: saving memories and disconnecting (press Ctrl+C again to force)...`);
-    const force = setTimeout(() => process.exit(1), 20_000);
+    const force = setTimeout(() => process.exit(0), 30_000);
     await manager.shutdown();
     await web?.close?.();
     clearTimeout(force);
@@ -46,6 +47,9 @@ async function main() {
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+  // Closing the console window on Windows sends SIGHUP; Ctrl+Break sends SIGBREAK.
+  process.on('SIGHUP', () => shutdown('SIGHUP'));
+  if (process.platform === 'win32') process.on('SIGBREAK', () => shutdown('SIGBREAK'));
   // A bug in one bot must never take the whole program down.
   process.on('uncaughtException', (e) => log.error('Uncaught exception:', e));
   process.on('unhandledRejection', (e) => log.error('Unhandled rejection:', e));

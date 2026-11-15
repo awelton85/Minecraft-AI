@@ -15,7 +15,10 @@ export class BotManager extends EventEmitter {
     this.runners = new Map(); // name -> BotRunner
 
     // Character edits: rebuild runners whose profile changed, add/remove characters.
-    settingsManager.on('change', () => this.syncCharacters().catch((e) => log.error('sync failed:', e)));
+    // Serialised: a second save while the first sync is still shutting a bot down must wait.
+    settingsManager.on('change', () => {
+      this._sync = (this._sync || Promise.resolve()).then(() => this.syncCharacters()).catch((e) => log.error('sync failed:', e));
+    });
   }
 
   async getRunner(name, create = false) {
@@ -40,12 +43,19 @@ export class BotManager extends EventEmitter {
         this.runners.delete(name);
         this.emit('status', { bot: name, status: { connection: 'stopped', removed: true } });
       } else if (JSON.stringify(profile) !== r._profileJson) {
-        // Profile edited: restart with the new profile if it was running.
-        const wasRunning = r.wantRunning;
-        await r.shutdown();
-        this.runners.delete(name);
-        const nr = await this.getRunner(name, true);
-        if (wasRunning && profile.enabled !== false) await nr.start();
+        const before = JSON.parse(r._profileJson);
+        r._profileJson = JSON.stringify(profile);
+        if (before.username !== profile.username || JSON.stringify(before.llm) !== JSON.stringify(profile.llm)) {
+          // Identity or model changed: reconnect with the new profile if it was running.
+          const wasRunning = r.wantRunning;
+          await r.shutdown();
+          this.runners.delete(name);
+          const nr = await this.getRunner(name, true);
+          if (wasRunning) await nr.start();
+        } else {
+          // Personality / goal / voice: apply live; the agent refreshes its prompt at the next turn.
+          r.updateProfile(profile);
+        }
       }
     }
     for (const name of active) {
@@ -115,6 +125,18 @@ export class BotManager extends EventEmitter {
     const r = this.runners.get(name);
     if (!r) throw new Error(`Unknown character ${name}`);
     return r.memory.data;
+  }
+
+  deleteMemoryEntry(name, section, key) {
+    const r = this.runners.get(name);
+    if (!r) throw new Error(`Unknown character ${name}`);
+    return r.memory.deleteEntry(section, key);
+  }
+
+  resetConversation(name) {
+    const r = this.runners.get(name);
+    if (!r) throw new Error(`Unknown character ${name}`);
+    r.agent.resetConversation();
   }
 
   async saveMemory(name, obj) { await (await this.need(name)).memory.replace(obj); }

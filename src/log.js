@@ -15,12 +15,21 @@ class Logger extends EventEmitter {
   }
 
   enableFile(dir) {
+    this.logDir = dir;
+    this.openFileFor(today());
+  }
+
+  /** One file per day; rolls over at midnight. Logging to file never crashes the program. */
+  openFileFor(day) {
     try {
-      fs.mkdirSync(dir, { recursive: true });
-      const day = new Date().toISOString().slice(0, 10);
-      this.fileStream = fs.createWriteStream(path.join(dir, `minecraft-ai-${day}.log`), { flags: 'a' });
+      this.fileStream?.end();
+      fs.mkdirSync(this.logDir, { recursive: true });
+      this.fileDay = day;
+      this.fileStream = fs.createWriteStream(path.join(this.logDir, `minecraft-ai-${day}.log`), { flags: 'a' });
+      this.fileStream.on('error', (e) => { console.error('Log file error:', e.message); this.fileStream = null; });
     } catch (e) {
       console.error('Could not open log file:', e.message);
+      this.fileStream = null;
     }
   }
 
@@ -34,6 +43,7 @@ class Logger extends EventEmitter {
     if (LEVELS[level] >= (LEVELS[this.consoleLevel] ?? 20)) {
       console.log(`${COLORS[level]}${line}\x1b[0m`);
     }
+    if (this.logDir && this.fileDay !== today()) this.openFileFor(today());
     if (this.fileStream) this.fileStream.write(line + '\n');
     this.emit('log', entry);
   }
@@ -52,6 +62,11 @@ class Logger extends EventEmitter {
   info(...a) { this.write('info', null, ...a); }
   warn(...a) { this.write('warn', null, ...a); }
   error(...a) { this.write('error', null, ...a); }
+}
+
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function safeJson(v) {
