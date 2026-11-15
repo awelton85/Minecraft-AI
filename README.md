@@ -21,17 +21,18 @@ AI-controlled players for Minecraft Java Edition. Each bot is a real player on y
 ## How it fits together
 
 ```
- Host PC                                             Player PC (can be the same machine)
- ┌──────────────────────────────────────┐            ┌────────────────────────────┐
- │ Paper server 26.1.2 + ViaVersion      │◀──────────│ Minecraft (latest, you play)│
- │        ▲ (bots join as players)       │           │                             │
- │ node src/index.js                     │           │ Browser: dashboard + voice  │
- │   BotRunner ─ Agent ─ skills          │◀──https───│  https://<host-ip>:3000     │
- │   web dashboard :3000                 │           └────────────────────────────┘
- │        │                              │
- │        ├──▶ Claude API (internet)     │
- │        └──▶ LM Studio :1234 (local)   │
- └──────────────────────────────────────┘
+┌──────────────────────────────────────┐               ┌────────────────────────────────┐
+│ Host PC                              │               │ Player PC (can be the same PC) │
+│ Paper server 26.1.2 + ViaVersion     │◀──── game ────│ Minecraft, latest version      │
+│   ▲  bots join as players            │               │ (you play)                     │
+│   │                                  │               │                                │
+│ Bot program (node src/index.js)      │               │                                │
+│   BotRunner → Agent → skills         │               │ Browser: dashboard + voice     │
+│   web dashboard  :3000               │◀──── https ───│ https://<host-ip>:3000         │
+│   │                                  │               └────────────────────────────────┘
+│   ├──▶ Claude API (internet)         │
+│   └──▶ LM Studio  :1234              │
+└──────────────────────────────────────┘
 ```
 
 **Why server version 26.1.2?** Mineflayer currently supports Minecraft up to 26.1. The server runs the newest version the bots can handle, and the ViaVersion plugin lets newer clients (e.g. 26.3) join it anyway. Players keep using the latest launcher version.
