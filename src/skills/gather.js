@@ -74,6 +74,7 @@ export const gatherSkills = [
         const me = bot.entity.position;
         const found = bot.findBlocks({ matching: ids, maxDistance, count: 40 })
           .filter((p) => !bad.has(p.toString()))
+          .filter((p) => !(p.y < me.y - 0.5 && Math.abs(p.x + 0.5 - me.x) < 0.8 && Math.abs(p.z + 0.5 - me.z) < 0.8)) // never dig the floor we stand on
           .map((p) => ({ p, score: p.distanceTo(me) + Math.abs(p.y - me.y) * 0.5 }))
           .sort((a, b) => a.score - b.score);
         if (!found.length) { lastError = `no more ${res.generic ? args.block : res.names[0]} within ${maxDistance} blocks`; break; }

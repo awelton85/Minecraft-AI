@@ -86,7 +86,29 @@ function pickPlan(bot, names, qty, inv) {
   return best;
 }
 
+/**
+ * Run `fn` with bot.clickWindow slowed down by ~100ms per click. mineflayer's craft() fires window clicks back-to-back;
+ * on Paper 26.1 the server then drops/rejects about half of the 3x3 crafting-table crafts. Pacing fixes it (6/6 vs 2/6).
+ */
+async function pacedClicks(bot, fn, delayMs = 100) {
+  const orig = bot.clickWindow;
+  bot.clickWindow = async (...a) => {
+    const r = await orig.apply(bot, a);
+    await new Promise((res) => setTimeout(res, delayMs));
+    return r;
+  };
+  try {
+    return await fn();
+  } finally {
+    bot.clickWindow = orig;
+  }
+}
+
 async function craftSteps(ctx, steps, table) {
+  return pacedClicks(ctx.bot, () => craftStepsInner(ctx, steps, table));
+}
+
+async function craftStepsInner(ctx, steps, table) {
   const bot = ctx.bot;
   for (const s of steps) {
     checkAbort(ctx);

@@ -569,7 +569,9 @@ export async function moveTo(ctx, goal, opts = {}) {
     };
     const onReached = () => finish();
     const onPath = (r) => {
-      if (r.status === 'noPath' && r.path.length === 0) finish(new SkillError(`No path to ${label}. It may be enclosed, too far, or blocked.`));
+      if (r.path.length === 0 && (r.status === 'noPath' || r.status === 'timeout')) {
+        finish(new SkillError(`No path to ${label} (${r.status === 'timeout' ? 'pathfinding gave up after a long search' : 'no route exists'}). It may be enclosed, too far, or blocked.`));
+      }
     };
     const onStop = () => { if (!done) finish(new SkillError(`Movement to ${label} was interrupted.`)); };
     const onAbort = () => finish(new SkillError('Aborted'));

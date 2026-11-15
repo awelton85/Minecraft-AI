@@ -136,7 +136,7 @@ tests.observe = async () => {
 tests.gather = async () => {
   await setup();
   let r = await run(ctx, 'collect_block', { block: 'log', count: 3 });
-  check('collect_block log x3', r.ok && /Collected 3/.test(r.out));
+  check('collect_block log x3', r.ok && /Collected 3 /.test(r.out));
   r = await run(ctx, 'find_blocks', { block: 'oak log', count: 3 });
   check('find_blocks', r.ok);
   r = await run(ctx, 'collect_block', { block: 'unobtainium' });
@@ -162,6 +162,275 @@ tests.craft = async () => {
   await setup([`give ${B} oak_log 3`]);
   r = await run(ctx, 'craft_item', { item: 'wooden_pickaxe' });
   check('craft wooden_pickaxe from raw logs only (table+planks+sticks)', r.ok, r.out);
+};
+
+
+const ARENA = { x: 300, y: 150, z: 300 };
+/** Flat smooth_stone platform (unminable by collect tests) high above the terrain, bot teleported to its centre. */
+async function arena(extra = []) {
+  const { x, y, z } = ARENA;
+  await mc(`forceload add ${x - 24} ${z - 24} ${x + 24} ${z + 24}`);
+  await sleep(1500);
+  await mc(`fill ${x - 20} ${y - 1} ${z - 20} ${x + 20} ${y - 1} ${z + 20} smooth_stone`);
+  await mc(`fill ${x - 20} ${y} ${z - 20} ${x + 20} ${y + 12} ${z + 20} air`);
+  await setup(extra);
+  await mc(`tp ${B} ${x} ${y} ${z}`);
+  await sleep(1500);
+}
+const here = () => bot.entity.position.floored();
+const rel = (dx, dy, dz) => { const p = here(); return { x: p.x + dx, y: p.y + dy, z: p.z + dz }; };
+
+tests.mining = async () => {
+  await arena([`give ${B} wooden_pickaxe 1`]);
+  await mc(`execute at ${B} run fill ~3 ~ ~3 ~6 ~2 ~6 stone`);
+  await sleep(800);
+  let r = await run(ctx, 'collect_block', { block: 'cobblestone', count: 5, maxDistance: 16 });
+  check('collect cobblestone x5 (mines stone)', r.ok && /5 cobblestone/.test(r.out), r.out ?? r.err?.message);
+  const p = rel(4, 0, 4);
+  r = await run(ctx, 'dig_block_at', p);
+  check('dig_block_at', r.ok);
+  r = await run(ctx, 'dig_block_at', { x: here().x, y: -64, z: here().z });
+  check('dig_block_at bedrock/void fails cleanly', !r.ok || /air/.test(r.out ?? ''));
+};
+
+tests.build = async () => {
+  await arena([`give ${B} cobblestone 40`, `give ${B} oak_planks 20`]);
+  const f = here();
+  let r = await run(ctx, 'place_block', { block: 'cobblestone', x: f.x + 2, y: f.y, z: f.z });
+  check('place_block', r.ok && bot.blockAt(f.offset(2, 0, 0))?.name === 'cobblestone', r.out ?? r.err?.message);
+  r = await run(ctx, 'build_shape', { shape: 'wall', block: 'cobblestone', from: { x: f.x - 2, y: f.y, z: f.z + 3 }, to: { x: f.x + 2, y: f.y + 2, z: f.z + 3 } });
+  const wallOk = [-2, 0, 2].every((dx) => bot.blockAt(f.offset(dx, 2, 3))?.name === 'cobblestone');
+  check('build_shape wall 5x3', r.ok && wallOk, r.out ?? r.err?.message);
+  r = await run(ctx, 'build_shape', { shape: 'floor', block: 'planks', from: { x: f.x - 6, y: f.y - 1, z: f.z - 4 }, to: { x: f.x - 4, y: f.y - 1, z: f.z - 2 } });
+  check('build_shape floor (generic planks)', r.ok, r.out ?? r.err?.message);
+  r = await run(ctx, 'build_shape', { shape: 'pillar', block: 'cobblestone', from: { x: f.x + 5, y: f.y, z: f.z - 4 }, to: { x: f.x + 5, y: f.y + 3, z: f.z - 4 } });
+  check('build_shape pillar', r.ok && bot.blockAt(f.offset(5, 3, -4))?.name === 'cobblestone', r.out ?? r.err?.message);
+  r = await run(ctx, 'build_shape', { shape: 'wall', block: 'diamond_block', from: { x: 0, y: 70, z: 0 }, to: { x: 3, y: 70, z: 0 } });
+  check('build_shape without blocks fails up front', !r.ok && /Need|no diamond_block|have no/i.test(r.err.message), r.err?.message);
+};
+
+tests.shelter = async () => {
+  await arena([`give ${B} cobblestone 20`]);
+  const r = await run(ctx, 'build_shelter');
+  check('build_shelter', r.ok, r.out ?? r.err?.message);
+  const f = here();
+  const closed = bot.blockAt(f.offset(1, 1, 0))?.name !== 'air' && bot.blockAt(f.offset(0, 2, 0))?.name !== 'air';
+  check('shelter closed', closed);
+  // dig out
+  await run(ctx, 'dig_block_at', { x: f.x + 1, y: f.y, z: f.z });
+  await run(ctx, 'dig_block_at', { x: f.x + 1, y: f.y + 1, z: f.z });
+};
+
+tests.move = async () => {
+  await arena([]);
+  const f = here();
+  let r = await run(ctx, 'go_to', { x: f.x + 12, y: f.y, z: f.z + 5, range: 2 });
+  check('go_to', r.ok && bot.entity.position.distanceTo(f.offset(12, 0, 5)) < 4, r.out ?? r.err?.message);
+  r = await run(ctx, 'save_place', { name: 'camp', note: 'test' });
+  check('save_place', r.ok);
+  r = await run(ctx, 'go_to', { x: f.x, z: f.z });
+  r = await run(ctx, 'go_to_place', { name: 'camp' });
+  check('go_to_place', r.ok);
+  r = await run(ctx, 'list_places');
+  check('list_places', r.ok && /camp/.test(r.out));
+  r = await run(ctx, 'go_to_place', { name: 'nowhere' });
+  check('go_to_place unknown fails cleanly', !r.ok);
+  r = await run(ctx, 'explore', { direction: 'east', distance: 30 });
+  check('explore', r.ok, r.out ?? r.err?.message);
+};
+
+tests.players = async () => {
+  await arena([]);
+  const { bot: b2 } = await makeBot('SkillTestB');
+  await mc(`tp SkillTestB ${B}`);
+  await sleep(2500);
+  const ctx2 = makeCtx(b2, null);
+  let r = await run(ctx, 'go_to_player', { name: 'SkillTestB', distance: 2 });
+  check('go_to_player', r.ok, r.out ?? r.err?.message);
+  await mc(`give ${B} cobblestone 5`);
+  await sleep(500);
+  r = await run(ctx, 'give_to_player', { player: 'SkillTestB', item: 'cobblestone', count: 3 });
+  await sleep(2000);
+  const got = b2.inventory.items().find((i) => i.name === 'cobblestone');
+  check('give_to_player (other bot receives)', r.ok && got && got.count >= 1, `b got ${got?.count}`);
+  // follow: B walks away, A follows for 8s
+  await mc(`tp SkillTestB ~15 ~ ~`);
+  await sleep(1500);
+  const t0 = Date.now();
+  const p = run(ctx, 'follow_player', { name: 'SkillTestB', distance: 3, seconds: 6 });
+  r = await p;
+  check('follow_player returns after seconds', r.ok && Date.now() - t0 < 12000, r.out ?? r.err?.message);
+  // follow is interruptible via abort
+  const p2 = run(ctx, 'follow_player', { name: 'SkillTestB', seconds: 60 });
+  await sleep(1500);
+  const t1 = Date.now();
+  ctx.abort();
+  r = await p2;
+  check('follow_player abort', !r.ok && /Aborted/.test(r.err.message) && Date.now() - t1 < 2000, `${Date.now() - t1}ms`);
+  ctx.reset();
+  b2.quit();
+};
+
+tests.combat = async () => {
+  await arena([`give ${B} stone_sword 1`, `effect give ${B} resistance 60 4 true`]);
+  await mc(`time set night`);
+  await mc(`execute at ${B} run summon zombie ~6 ~ ~`);
+  await sleep(1500);
+  let r = await run(ctx, 'attack', { target: 'zombie', timeoutSeconds: 40 });
+  check('attack zombie', r.ok && /Killed/.test(r.out), r.out ?? r.err?.message);
+  await mc(`execute at ${B} run summon zombie ~8 ~ ~`);
+  await mc(`execute at ${B} run summon zombie ~-8 ~ ~`);
+  await sleep(1200);
+  r = await run(ctx, 'flee', { distance: 20 });
+  check('flee', r.ok, r.out ?? r.err?.message);
+  r = await run(ctx, 'attack', { target: 'unicorn' });
+  check('attack with no such mob fails cleanly', !r.ok);
+  await mc(`kill @e[type=zombie]`);
+};
+
+tests.inventory = async () => {
+  await arena([`give ${B} cooked_beef 3`, `give ${B} iron_helmet 1`, `give ${B} stone_pickaxe 1`, `give ${B} dirt 10`, `effect give ${B} hunger 3 20 true`]);
+  await sleep(4000);
+  let r = await run(ctx, 'inventory');
+  check('inventory', r.ok && /cooked_beef/.test(r.out));
+  r = await run(ctx, 'equip', { item: 'iron_helmet' });
+  check('equip armor auto slot', r.ok && bot.inventory.slots[5]?.name === 'iron_helmet');
+  r = await run(ctx, 'equip', { item: 'stone_pickaxe' });
+  check('equip hand', r.ok && bot.heldItem?.name === 'stone_pickaxe');
+  r = await run(ctx, 'eat');
+  check('eat', r.ok || /full/.test(r.err?.message), r.out ?? r.err?.message);
+  r = await run(ctx, 'toss_item', { item: 'dirt', count: 4 });
+  check('toss_item', r.ok);
+  r = await run(ctx, 'toss_item', { item: 'nonexistent_thing' });
+  check('toss unknown item fails cleanly', !r.ok);
+};
+
+tests.smelt = async () => {
+  await arena([`give ${B} raw_iron 3`, `give ${B} coal 2`, `give ${B} furnace 1`]);
+  let r = await run(ctx, 'smelt_item', { input: 'raw iron', count: 3 });
+  check('smelt_item raw_iron x3 (places furnace)', r.ok && countItem('iron_ingot') === 3, r.out ?? r.err?.message);
+  await setup([`give ${B} cobblestone 4`, `give ${B} sand 1`]);
+  r = await run(ctx, 'smelt_item', { input: 'sand' });
+  check('smelt without fuel fails cleanly', !r.ok && /fuel/i.test(r.err.message), r.err?.message);
+};
+const countItem = (n) => bot.inventory.items().filter((i) => i.name === n).reduce((a, b) => a + b.count, 0);
+
+tests.chest = async () => {
+  await arena([`give ${B} chest 1`, `give ${B} cobblestone 30`, `give ${B} dirt 10`, `give ${B} stone_axe 1`, `give ${B} bread 2`]);
+  const spot = rel(2, 0, 0);
+  let r = await run(ctx, 'place_block', { block: 'chest', ...spot });
+  check('place chest', r.ok, r.out ?? r.err?.message);
+  r = await run(ctx, 'chest_deposit', { items: 'auto' });
+  check('chest_deposit auto keeps tools/food', r.ok && countItem('stone_axe') === 1 && countItem('bread') === 2 && countItem('cobblestone') === 0, r.out ?? r.err?.message);
+  r = await run(ctx, 'chest_list');
+  check('chest_list', r.ok && /cobblestone/.test(r.out), r.out);
+  r = await run(ctx, 'chest_withdraw', { item: 'cobblestone', count: 12 });
+  check('chest_withdraw', r.ok && countItem('cobblestone') === 12, r.out ?? r.err?.message);
+  r = await run(ctx, 'chest_withdraw', { item: 'diamond' });
+  check('chest_withdraw missing item fails with contents', !r.ok && /contains/.test(r.err.message), r.err?.message);
+};
+
+tests.misc = async () => {
+  await arena([`give ${B} oak_log 1`]);
+  let r = await run(ctx, 'remember', { fact: 'test fact: owner likes oak' });
+  check('remember', r.ok);
+  const id = ctx.memory.data.facts[0]?.id;
+  r = await run(ctx, 'forget', { fact: id });
+  check('forget', r.ok && ctx.memory.data.facts.length === 0);
+  r = await run(ctx, 'forget', { fact: 'nothing like this' });
+  check('forget unknown fails', !r.ok);
+  r = await run(ctx, 'look_around');
+  check('look_around', r.ok && r.out.length > 100);
+  r = await run(ctx, 'chat', { text: 'hello from smoke test' });
+  check('chat', r.ok);
+  const t0 = Date.now();
+  r = await run(ctx, 'wait', { seconds: 2 });
+  check('wait', r.ok && Date.now() - t0 >= 1900);
+  const p = run(ctx, 'wait', { seconds: 60 });
+  await sleep(500);
+  const t1 = Date.now(); ctx.abort(); r = await p; ctx.reset();
+  check('wait abort < 1s', !r.ok && Date.now() - t1 < 1000);
+  // use_block: place a lever / door
+  await mc(`give ${B} oak_door 1`);
+  const f = here();
+  await mc(`setblock ${f.x + 2} ${f.y} ${f.z} oak_door[half=lower,open=false]`);
+  await mc(`setblock ${f.x + 2} ${f.y + 1} ${f.z} oak_door[half=upper,open=false]`);
+  await sleep(500);
+  r = await run(ctx, 'use_block', { x: f.x + 2, y: f.y, z: f.z });
+  check('use_block door', r.ok && /open=true/.test(r.out), r.out ?? r.err?.message);
+  // sleep: night, no bed -> clear error; with bed -> sleeps
+  await mc('time set night');
+  await sleep(500);
+  r = await run(ctx, 'sleep');
+  check('sleep without bed explains', !r.ok && /bed/i.test(r.err.message), r.err?.message);
+  await mc(`give ${B} red_bed 1`);
+  await sleep(500);
+  r = await run(ctx, 'place_block', { block: 'red_bed', x: f.x - 2, y: f.y, z: f.z });
+  r = await run(ctx, 'sleep');
+  check('sleep with bed', r.ok || /still night|woke/.test(r.err?.message ?? ''), r.out ?? r.err?.message);
+  await mc('time set day');
+  r = await run(ctx, 'sleep');
+  check('sleep by day explains', !r.ok && /not night/i.test(r.err.message), r.err?.message);
+};
+
+tests.farm = async () => {
+  await arena([`give ${B} wheat_seeds 4`]);
+  const f = here();
+  await mc(`fill ${f.x + 2} ${f.y - 1} ${f.z + 2} ${f.x + 4} ${f.y - 1} ${f.z + 2} farmland`);
+  await mc(`fill ${f.x + 2} ${f.y} ${f.z + 2} ${f.x + 4} ${f.y} ${f.z + 2} wheat[age=7]`);
+  await sleep(800);
+  const r = await run(ctx, 'farm', { radius: 10 });
+  check('farm harvests and replants', r.ok && /Harvested 3 wheat/.test(r.out) && /replanted 3/.test(r.out), r.out ?? r.err?.message);
+};
+
+tests.surface = async () => {
+  await arena([`give ${B} cobblestone 16`]);
+  const f = here();
+  // dig a 1x1 hole 6 deep next to us and drop in
+  await mc(`fill ${f.x + 3} ${f.y - 7} ${f.z} ${f.x + 3} ${f.y - 1} ${f.z} air`);
+  await mc(`tp ${B} ${f.x + 3} ${f.y - 6} ${f.z}`);
+  await sleep(1500);
+  const r = await run(ctx, 'come_up_to_surface');
+  check('come_up_to_surface from 1x1 hole', r.ok && bot.entity.position.y > f.y - 2, `${r.out ?? r.err?.message} y=${bot.entity.position.y}`);
+};
+
+tests.abort = async () => {
+  await setup();
+  const p = run(ctx, 'collect_block', { block: 'log', count: 60, maxDistance: 96 });
+  await sleep(4000);
+  const t0 = Date.now();
+  ctx.abort();
+  const r = await p;
+  const dt = Date.now() - t0;
+  check('collect_block abort stops within 2s', !r.ok && /Aborted/.test(r.err.message) && dt < 2000, `${dt}ms`);
+  await sleep(300);
+  const moving = bot.pathfinder.isMoving() || bot.pathfinder.isMining();
+  check('pathfinder idle after abort', !moving);
+  ctx.reset();
+};
+
+tests.stuck = async () => {
+  await arena([`give ${B} cobblestone 10`]);
+  const f = here();
+  const T = { x: f.x + 12, y: f.y + 6, z: f.z };
+  await mc(`fill ${T.x - 1} ${T.y - 1} ${T.z - 1} ${T.x + 1} ${T.y + 1} ${T.z + 1} bedrock hollow`);
+  await sleep(800);
+  let t0 = Date.now();
+  let r = await run(ctx, 'go_to', { ...T, range: 0 });
+  let dt = Date.now() - t0;
+  check('go_to enclosed target fails cleanly within 60s', !r.ok && r.err instanceof SkillError && dt < 60000, `${dt}ms ${r.err?.message}`);
+  // walled-in bot (no way out except digging bedrock) trying to go somewhere
+  const W = { x: f.x - 12, y: f.y, z: f.z };
+  await mc(`fill ${W.x - 1} ${W.y - 1} ${W.z - 1} ${W.x + 1} ${W.y + 5} ${W.z + 1} bedrock hollow`);
+  await mc(`fill ${W.x} ${W.y} ${W.z} ${W.x} ${W.y + 4} ${W.z} air`);
+  await mc(`tp ${B} ${W.x} ${W.y} ${W.z}`);
+  await sleep(1500);
+  t0 = Date.now();
+  r = await run(ctx, 'go_to', { x: f.x, y: f.y, z: f.z + 8, range: 1 });
+  dt = Date.now() - t0;
+  check('go_to from sealed bedrock cell fails/escapes in bounded time', dt < 90000, `${dt}ms ${r.out ?? r.err?.message}`);
+  await mc(`fill ${W.x - 1} ${W.y - 1} ${W.z - 1} ${W.x + 1} ${W.y + 5} ${W.z + 1} air`);
+  await mc(`fill ${T.x - 1} ${T.y - 1} ${T.z - 1} ${T.x + 1} ${T.y + 1} ${T.z + 1} air`);
 };
 
 const wanted = process.argv.slice(2);
