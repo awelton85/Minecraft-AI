@@ -738,3 +738,10 @@ export async function collectDrops(ctx, pos, { radius = 6, maxMs = 6000 } = {}) 
     await sleep(ctx, 250);
   }
 }
+
+/** Goal to get within reach of a block. Non-solid blocks (crops, flowers, cane) cannot be ray-cast, so use a distance goal. */
+export function goalForBlock(bot, pos, block) {
+  const b = block ?? blockAtSafe(bot, pos);
+  if (b && b.boundingBox === 'block') return new goals.GoalLookAtBlock(pos, bot.world, { reach: 4 });
+  return new goals.GoalNear(pos.x, pos.y, pos.z, 3);
+}

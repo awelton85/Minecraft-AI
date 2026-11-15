@@ -148,7 +148,7 @@ export const movementSkills = [
         const a = Math.atan2(dz, dx) + rot;
         const tx = cur.x + Math.cos(a) * step, tz = cur.z + Math.sin(a) * step;
         try {
-          await moveTo(ctx, new goals.GoalNearXZ(tx, tz, 4), { label: `exploration point ${Math.round(tx)}, ${Math.round(tz)}`, timeoutMs: 60000 });
+          await moveTo(ctx, new goals.GoalNearXZ(tx, tz, 4), { label: `exploration point ${Math.round(tx)}, ${Math.round(tz)}`, timeoutMs: 40000 });
           seen.add(cellOf(bot.entity.position.x, bot.entity.position.z));
           moved = Math.hypot(bot.entity.position.x - start.x, bot.entity.position.z - start.z);
           rot = 0;

@@ -301,6 +301,7 @@ export async function smeltItem(ctx, rawInput, count = 1, rawFuel) {
   }
   const startOut = countItem(bot, output);
   let timedOut = false;
+  let taken = 0;
   try {
     // clear leftovers of a different type
     const cur = furnace.inputItem();
@@ -317,25 +318,27 @@ export async function smeltItem(ctx, rawInput, count = 1, rawFuel) {
     }
     const budget = Math.min(170000, n * 10500 + 9000);
     const end = Date.now() + budget;
+    const take = async () => {
+      const t = await furnace.takeOutput().catch(() => null);
+      if (t) taken += t.count;
+    };
     while (Date.now() < end) {
       await sleep(ctx, 700);
       const out = furnace.outputItem();
-      if (out && out.count >= 1 && (out.count >= n || !furnace.inputItem())) {
-        await furnace.takeOutput().catch(() => {});
-      }
-      if (countItem(bot, output) - startOut >= n) break;
+      if (out && out.count >= 1 && (out.count >= n - taken || !furnace.inputItem())) await take();
+      if (taken >= n) break;
       if (!furnace.inputItem() && !furnace.outputItem()) break;
     }
-    if (countItem(bot, output) - startOut < n) {
-      timedOut = true;
-      if (furnace.outputItem()) await furnace.takeOutput().catch(() => {});
-    }
+    if (furnace.outputItem()) await take();
+    if (taken < n) timedOut = true;
     if (furnace.inputItem()) await furnace.takeInput().catch(() => {});
     if (furnace.fuelItem()) await furnace.takeFuel().catch(() => {});
   } finally {
     try { furnace.close(); } catch { /* ignore */ }
   }
-  const got = countItem(bot, output) - startOut;
+  // inventory counts only update once the furnace window is closed
+  await waitUntil(ctx, () => countItem(bot, output) - startOut >= taken, 2000, 100);
+  const got = taken;
   if (got <= 0) throw new SkillError(`Smelting produced nothing within the time limit (input ${input}, fuel ${fuelName}). The furnace at ${fmtPos(furnaceBlock.position)} may be blocked.`);
   return `Smelted ${got} ${input} into ${output} using ${fuelName}${timedOut ? ` (stopped early, wanted ${n})` : ''}${notes.length ? ' (' + notes.join('; ') + ')' : ''}. Inventory has ${countItem(bot, output)} ${output}.`;
 }

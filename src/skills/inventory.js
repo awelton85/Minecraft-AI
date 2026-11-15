@@ -37,6 +37,7 @@ async function openChestAt(ctx, args) {
     if (err instanceof SkillError) throw err;
     throw new SkillError(`Could not open the ${block.name} at ${fmtPos(block.position)}: ${err.message}`);
   }
+  await sleep(ctx, 300); // let the server finish sending the window contents
   return { block, win };
 }
 
@@ -216,6 +217,7 @@ export const inventorySkills = [
       const { block, win } = await openChestAt(ctx, args);
       const moved = {};
       let full = false;
+      let lastMsg = '';
       try {
         for (const it of list) {
           checkAbort(ctx);
@@ -224,14 +226,15 @@ export const inventorySkills = [
             moved[it.name] = (moved[it.name] ?? 0) + it.count;
           } catch (err) {
             if (err.message === 'Aborted') throw err;
-            if (/full|no space|Can't find/i.test(err.message)) { full = true; break; }
+            lastMsg = err.message;
+            if (/chest is full|no space/i.test(err.message)) { full = true; break; }
             ctx.log?.(`deposit ${it.name}: ${err.message}`);
           }
         }
       } finally {
         closeQuiet(win);
       }
-      if (!Object.keys(moved).length) throw new SkillError(`Could not deposit anything into the ${block.name} at ${fmtPos(block.position)}${full ? ' (it is full)' : ''}.`);
+      if (!Object.keys(moved).length) throw new SkillError(`Could not deposit anything into the ${block.name} at ${fmtPos(block.position)}${full ? ' (it is full)' : ''}${lastMsg ? `: ${lastMsg}` : ''}.`);
       return `Deposited ${formatCounts(moved, 20)} into ${block.name} at ${fmtPos(block.position)}${full ? ' (chest became full; some items stayed with me)' : ''}.`;
     },
   },
@@ -258,6 +261,7 @@ export const inventorySkills = [
         const n = Math.min(args.count ? intArg(args.count, 1) : contents[name], contents[name]);
         const id = bot.registry.itemsByName[name].id;
         let left = n;
+        const startHave = countItem(bot, name);
         while (left > 0) {
           const step = Math.min(left, bot.registry.itemsByName[name].stackSize ?? 64);
           try {
@@ -269,6 +273,7 @@ export const inventorySkills = [
           }
           left -= step;
         }
+        await waitUntil(ctx, () => countItem(bot, name) >= startHave + (n - left), 2000, 100);
         return `Took ${n - left} ${name} from the ${block.name} at ${fmtPos(block.position)}. Inventory has ${countItem(bot, name)} ${name}.`;
       } finally {
         closeQuiet(win);

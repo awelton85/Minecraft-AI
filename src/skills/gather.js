@@ -4,7 +4,7 @@
 import {
   SkillError, goals, Vec3, moveTo, checkAbort, sleep, fmtPos, vecFrom, intArg, resolveBlock, blockIdsFor, countItem,
   digBlock, collectDrops, blockAtSafe, isAir, isLiquid, FACES, goNear, findItem, placeItemAt, inventoryCounts,
-  formatCounts, waitUntil, withTimeout, freeSlots,
+  formatCounts, waitUntil, withTimeout, freeSlots, goalForBlock,
 } from './util.js';
 
 function dropNamesOf(bot, blockName) {
@@ -89,7 +89,7 @@ export const gatherSkills = [
             const need = toolNamesFor(bot, block);
             throw new SkillError(`Cannot harvest ${block.name}: it needs ${need.length ? need.join(' or ') : 'a better tool'} (holding ${bot.heldItem?.name ?? 'nothing'}). Craft that tool first.`);
           }
-          await moveTo(ctx, new goals.GoalLookAtBlock(target, bot.world, { reach: 4 }), { label: `${block.name} at ${fmtPos(target)}`, timeoutMs: 45000 });
+          await moveTo(ctx, goalForBlock(bot, target, block), { label: `${block.name} at ${fmtPos(target)}`, timeoutMs: 45000 });
           const fresh = blockAtSafe(bot, target);
           if (!fresh || !ids.includes(fresh.type)) continue;
           await digBlock(ctx, fresh);
@@ -131,9 +131,10 @@ export const gatherSkills = [
       const block = blockAtSafe(bot, pos);
       if (!block) throw new SkillError(`Position ${fmtPos(pos)} is not in a loaded chunk.`);
       if (isAir(block)) return `Nothing to dig at ${fmtPos(pos)} (already air).`;
+      if (block.name === 'bedrock' || block.hardness === -1) throw new SkillError(`${block.name} at ${fmtPos(pos)} is unbreakable.`);
       if (isLiquid(block)) throw new SkillError(`${block.name} at ${fmtPos(pos)} is a liquid; place a block there instead.`);
       if (bot.entity.position.distanceTo(pos.offset(0.5, 0.5, 0.5)) > 4.3) {
-        await moveTo(ctx, new goals.GoalLookAtBlock(pos, bot.world, { reach: 4 }), { label: `${block.name} at ${fmtPos(pos)}`, timeoutMs: 45000 });
+        await moveTo(ctx, goalForBlock(bot, pos, block), { label: `${block.name} at ${fmtPos(pos)}`, timeoutMs: 45000 });
       }
       try { await bot.tool.equipForBlock(block, { requireHarvest: false }); } catch { /* ignore */ }
       const harvestable = canHarvestNow(bot, block);
@@ -209,7 +210,7 @@ export const gatherSkills = [
         checkAbort(ctx);
         if (Date.now() > deadline) break;
         try {
-          await moveTo(ctx, new goals.GoalLookAtBlock(p, bot.world, { reach: 4 }), { label: 'crop', timeoutMs: 20000, noUnstick: true });
+          await moveTo(ctx, goalForBlock(bot, p, b), { label: 'crop', timeoutMs: 20000, noUnstick: true });
           const cur = blockAtSafe(bot, p);
           if (!cur || cur.name !== b.name) continue;
           await digBlock(ctx, cur, { timeoutMs: 5000 });
