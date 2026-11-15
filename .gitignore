@@ -1,0 +1,9 @@
+node_modules/
+config/settings.json
+config/secrets.json
+config/certs/
+data/
+server/
+logs/
+*.log
+.env

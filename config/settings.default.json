@@ -1,0 +1,61 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 25565,
+    "version": "auto",
+    "auth": "offline"
+  },
+  "owners": ["YourMinecraftName"],
+  "listenToEveryone": false,
+  "llm": {
+    "provider": "anthropic",
+    "fallbackProvider": "none",
+    "anthropic": {
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "maxTokens": 16000,
+      "refusalFallback": true
+    },
+    "lmstudio": {
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "model": "",
+      "toolMode": "auto",
+      "temperature": 0.4,
+      "maxTokens": 4096,
+      "contextTokens": 16384
+    }
+  },
+  "agent": {
+    "autonomous": true,
+    "idleThinkSeconds": 45,
+    "maxStepsPerTurn": 12,
+    "historyCompactAt": 60,
+    "actionTimeoutSeconds": 180,
+    "stuckSeconds": 12,
+    "chatMaxLength": 240,
+    "botsTalkToBots": "when-addressed"
+  },
+  "reflexes": {
+    "autoEat": true,
+    "autoArmor": true,
+    "selfDefense": true,
+    "autoRespawn": true
+  },
+  "reconnect": {
+    "enabled": true,
+    "initialDelaySeconds": 3,
+    "maxDelaySeconds": 60
+  },
+  "web": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 3000,
+    "https": true,
+    "password": ""
+  },
+  "voice": {
+    "ttsEnabled": true,
+    "readAllBotChat": true
+  },
+  "characters": ["Steve_AI"]
+}

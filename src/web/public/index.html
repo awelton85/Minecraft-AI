@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minecraft AI Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2339a24b'/%3E%3Crect x='3' y='4' width='3' height='3' fill='%23fff'/%3E%3Crect x='10' y='4' width='3' height='3' fill='%23fff'/%3E%3Crect x='6' y='9' width='4' height='4' fill='%23222'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">Minecraft AI</div>
+  <nav id="tabs">
+    <button data-tab="bots" class="active">Bots</button>
+    <button data-tab="chat">Chat &amp; Voice</button>
+    <button data-tab="settings">Settings</button>
+    <button data-tab="memory">Memory</button>
+    <button data-tab="logs">Logs</button>
+  </nav>
+  <div class="spacer"></div>
+  <span id="wsStatus" class="ws off" title="WebSocket connection"><i></i><span>connecting</span></span>
+  <button id="logoutBtn" class="small hidden">Log out</button>
+</header>
+
+<main>
+  <section id="tab-bots" class="tab active">
+    <div class="toolbar">
+      <button id="startAll" class="primary">Start all</button>
+      <button id="stopAll" class="danger">Stop all</button>
+      <span class="muted" id="botsSummary"></span>
+    </div>
+    <div id="botCards" class="cards"></div>
+  </section>
+
+  <section id="tab-chat" class="tab">
+    <div class="chat-layout">
+      <div class="chat-top">
+        <label class="chk"><input type="checkbox" id="showThoughts"> Show thoughts</label>
+        <label class="chk"><input type="checkbox" id="ttsOn"> Speak bot replies</label>
+        <button id="ttsStop" class="small">Stop speaking</button>
+        <button id="chatClear" class="small">Clear</button>
+        <span id="botChips" class="chips"></span>
+      </div>
+      <div id="feed" class="feed" aria-live="polite"></div>
+      <div id="interim" class="interim hidden"></div>
+      <div id="voiceMsg" class="notice hidden"></div>
+      <form id="chatForm" class="chat-form">
+        <select id="target" title="Send to"></select>
+        <input id="chatInput" type="text" autocomplete="off" maxlength="1000" placeholder="Say something to your bots...">
+        <button type="submit" class="primary">Send</button>
+        <button type="button" id="pttBtn" class="mic" title="Hold to talk (or click to toggle)">Mic</button>
+        <button type="button" id="handsFree" class="small" title="Listen continuously; only sends speech that starts with a wake word">Hands-free: off</button>
+      </form>
+      <div class="voice-opts muted">
+        <label>Extra wake words <input id="wakeExtra" type="text" placeholder="e.g. hey bot, computer" size="24"></label>
+        <span>Hands-free needs a wake word first: a bot's name, "everyone" or "all bots".</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-settings" class="tab">
+    <div class="subtabs">
+      <button data-sub="general" class="active">General</button>
+      <button data-sub="characters">Characters</button>
+    </div>
+    <div id="sub-general" class="sub active">
+      <div id="settingsForm"></div>
+      <div class="savebar">
+        <button id="saveSettings" class="primary">Save settings</button>
+        <button id="resetSettings">Reset form</button>
+        <span id="saveMsg" class="muted"></span>
+      </div>
+      <div id="restartBox" class="notice hidden"></div>
+    </div>
+    <div id="sub-characters" class="sub">
+      <div class="char-layout">
+        <div class="char-list">
+          <div id="charList"></div>
+          <button id="charAdd" class="primary">Add character</button>
+        </div>
+        <div id="charEditor" class="char-editor"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-memory" class="tab">
+    <div class="toolbar">
+      <select id="memBot"></select>
+      <button id="memReload" class="small">Reload</button>
+      <button id="memClear" class="danger small">Clear memory</button>
+      <span id="memMsg" class="muted"></span>
+    </div>
+    <div class="mem-layout">
+      <div id="memView"></div>
+      <div class="mem-raw">
+        <h3>Raw JSON</h3>
+        <textarea id="memRaw" spellcheck="false"></textarea>
+        <button id="memSaveRaw" class="primary">Save JSON</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-logs" class="tab">
+    <div class="toolbar">
+      <label>Level
+        <select id="logLevel">
+          <option value="debug">debug</option><option value="info" selected>info</option>
+          <option value="warn">warn</option><option value="error">error</option>
+        </select></label>
+      <label>Bot <select id="logBot"></select></label>
+      <button id="logPause" class="small">Pause</button>
+      <button id="logClear" class="small">Clear</button>
+      <label class="chk"><input type="checkbox" id="logScroll" checked> Auto-scroll</label>
+      <span id="logCount" class="muted"></span>
+    </div>
+    <div id="logView" class="logview"></div>
+  </section>
+</main>
+
+<div id="loginOverlay" class="overlay hidden">
+  <form id="loginForm" class="login">
+    <h2>Dashboard login</h2>
+    <input id="loginPw" type="password" placeholder="Password" autocomplete="current-password" autofocus>
+    <button class="primary" type="submit">Log in</button>
+    <div id="loginErr" class="err"></div>
+  </form>
+</div>
+<div id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>
