@@ -27,10 +27,30 @@ export function checkAbort(ctx) {
 
 /** Best-effort stop of everything physical the bot may be doing. */
 export function haltPathfinder(bot) {
-  // pathfinder.stop() only takes effect when the bot reaches the next path node; setGoal(null) clears the path immediately
+  // pathfinder.stop() only takes effect when the bot reaches the next path node and leaves stopPathing set;
+  // setGoal(null) clears the path immediately.
   try { bot.pathfinder?.setGoal(null); } catch { /* ignore */ }
-  try { bot.pathfinder?.stop(); } catch { /* ignore */ }
 }
+
+/** Close any container/crafting window the bot has open (leaked windows make later bot.craft calls fail). */
+export function closeOpenWindow(bot) {
+  try {
+    const w = bot.currentWindow;
+    if (w) bot.closeWindow(w);
+  } catch { /* ignore */ }
+}
+
+/** ms left until the Agent's deadline (fallback: unlimited). */
+export function timeLeft(ctx) {
+  if (typeof ctx.timeLeftMs === 'function') { try { return Math.max(0, ctx.timeLeftMs()); } catch { /* ignore */ } }
+  if (Number.isFinite(ctx.deadline)) return Math.max(0, ctx.deadline - Date.now());
+  return Infinity;
+}
+/** min(want, time left minus a safety margin), at least `floor`. */
+export function budgetMs(ctx, want, margin = 1500, floor = 1000) {
+  return Math.max(floor, Math.min(want, timeLeft(ctx) - margin));
+}
+export const outOfTime = (ctx, margin = 1500) => timeLeft(ctx) <= margin;
 
 export function stopEverything(ctx) {
   const bot = ctx.bot;
@@ -38,6 +58,7 @@ export function stopEverything(ctx) {
   try { bot.pvp?.forceStop?.(); } catch { /* ignore */ }
   try { bot.stopDigging(); } catch { /* ignore */ }
   try { bot.clearControlStates(); } catch { /* ignore */ }
+  closeOpenWindow(bot);
 }
 
 /** Resolve after ms, or throw SkillError('Aborted') as soon as the signal fires. */
@@ -154,6 +175,13 @@ export function applyPhysicsFix(bot) {
   if (ph && typeof ph.playerHalfWidth === 'number' && ph.playerHalfWidth === 0.3) ph.playerHalfWidth = Math.fround(0.3);
 }
 
+// Blocks that are almost always somebody's build / functional blocks: the pathfinder must never dig them.
+const PROTECTED_RE = /(chest|barrel|furnace|smoker|crafting_table|_bed$|spawner|bookshelf|^obsidian$|^bedrock$|shulker_box|_door$|trapdoor|fence|_gate$|_wall$|glass|_wool$|carpet|torch|lantern|ladder|_sign$|farmland|^(wheat|carrots|potatoes|beetroots|melon|pumpkin|sweet_berry_bush|nether_wart|sugar_cane|bamboo)$|_planks$|brick|stairs|_slab$|concrete|terracotta|^stripped_|^polished_|^smooth_|^cut_|^chiseled_|_button$|_pressure_plate$|lever|^hay_block$|^bell$|anvil|enchanting|beacon|banner|^item_frame|painting|_head$|^cauldron|^composter|^lectern|^loom|^grindstone|^stonecutter|^smithing|^cartography|^jukebox|^note_block|^tnt$|^rail|_rail$|^redstone|^repeater|^comparator|^observer|^piston|^dispenser|^dropper|^hopper|^end_portal|^nether_portal|^respawn_anchor|^lodestone|^conduit)/;
+/** Cheap blocks the pathfinder may use for scaffolding / bridges. */
+const SCAFFOLD_ITEMS = ['dirt', 'cobblestone', 'cobbled_deepslate', 'netherrack', 'andesite', 'diorite', 'granite', 'tuff'];
+
+export const isProtectedBlockName = (name) => PROTECTED_RE.test(name);
+
 /** Per-bot cached Movements; collectblock / pvp replace pathfinder movements so we re-apply ours before moving. */
 const movementCache = new WeakMap();
 export function getMovements(ctx, { dig = true } = {}) {
@@ -164,16 +192,15 @@ export function getMovements(ctx, { dig = true } = {}) {
     m = new Movements(bot);
     m.allowSprinting = true;
     m.allowParkour = true;
-    // never dig into valuable/structural blocks while walking
+    m.digCost = 4; // prefer walking around to digging
     for (const b of Object.values(bot.registry.blocksByName)) {
-      if (/(chest|barrel|furnace|crafting_table|_bed$|spawner|bookshelf|^obsidian$|^bedrock$|shulker_box)/.test(b.name)) {
-        m.blocksCantBreak.add(b.id);
-      }
+      if (PROTECTED_RE.test(b.name)) m.blocksCantBreak.add(b.id);
     }
-    const extra = ['netherrack', 'cobbled_deepslate', 'oak_planks', 'stone'];
-    for (const n of extra) {
+    // scaffolding: cheap junk only, never planks / stone / building materials
+    m.scafoldingBlocks.length = 0;
+    for (const n of SCAFFOLD_ITEMS) {
       const it = bot.registry.itemsByName[n];
-      if (it && !m.scafoldingBlocks.includes(it.id)) m.scafoldingBlocks.push(it.id);
+      if (it) m.scafoldingBlocks.push(it.id);
     }
     movementCache.set(bot, m);
   }
@@ -224,6 +251,7 @@ const ALIASES = {
   wood_shovel: 'wooden_shovel', wood_hoe: 'wooden_hoe', wood_door: 'oak_door', wood_slab: 'oak_slab',
   gold: 'gold_ingot', iron: 'iron_ingot', lapis: 'lapis_lazuli', sticks: 'stick',
   seeds: 'wheat_seeds', grass: 'short_grass', tall_grass: 'tall_grass', torches: 'torch',
+  pick: 'pickaxe', bonemeal: 'bone_meal', sugarcane: 'sugar_cane', quartz: 'quartz_block', steak: 'cooked_beef', redstone_dust: 'redstone',
 };
 
 function nameCandidates(norm) {
@@ -562,7 +590,7 @@ export async function moveTo(ctx, goal, opts = {}) {
   applyPhysicsFix(bot);
   checkAbort(ctx);
   const label = opts.label ?? 'destination';
-  const timeoutMs = opts.timeoutMs ?? 120000;
+  const timeoutMs = budgetMs(ctx, opts.timeoutMs ?? 120000);
   const stuckMs = Math.max(2, ctx.settings?.agent?.stuckSeconds ?? 12) * 1000;
 
   if (goal.isEnd?.(bot.entity.position.floored()) && !goal.dynamic) return;
@@ -593,7 +621,9 @@ export async function moveTo(ctx, goal, opts = {}) {
     const onReached = () => finish();
     const onPath = (r) => {
       if (r.path.length === 0 && (r.status === 'noPath' || r.status === 'timeout')) {
-        finish(new SkillError(`No path to ${label} (${r.status === 'timeout' ? 'pathfinding gave up after a long search' : 'no route exists'}). It may be enclosed, too far, or blocked.`));
+        const e = new SkillError(`No path to ${label} (${r.status === 'timeout' ? 'pathfinding gave up after a long search' : 'no route exists'}). It may be enclosed, too far, or blocked.${doorHint(bot, goal)}`);
+        e.code = 'nopath';
+        finish(e);
       }
     };
     const onStop = () => { if (!done) finish(new SkillError(`Movement to ${label} was interrupted.`)); };
@@ -606,7 +636,11 @@ export async function moveTo(ctx, goal, opts = {}) {
       if (done) return;
       const now = Date.now();
       if (!bot.entity) return finish(new SkillError('Bot disconnected.'));
-      if (now - start > timeoutMs) return finish(new SkillError(`Timed out after ${Math.round(timeoutMs / 1000)}s trying to reach ${label}.`));
+      if (now - start > timeoutMs) {
+        const e = new SkillError(`Timed out after ${Math.round(timeoutMs / 1000)}s trying to reach ${label}.`);
+        e.code = 'timeout';
+        return finish(e);
+      }
       const p = bot.entity.position;
       if (p.distanceTo(lastPos) > 0.6 || bot.pathfinder.isMining?.() || bot.pathfinder.isBuilding?.()) {
         lastPos = p.clone();
@@ -626,7 +660,9 @@ export async function moveTo(ctx, goal, opts = {}) {
     } catch (err) {
       if (err.message !== '__stuck__') throw err;
       if (unstuckTried) {
-        throw new SkillError(`Got stuck near ${fmtPos(bot.entity.position)} while moving to ${label} (no progress for ${Math.round(stuckMs / 1000)}s, unstick failed). Try a different route, dig through, or build/tower.`);
+        const e = new SkillError(`Got stuck near ${fmtPos(bot.entity.position)} while moving to ${label} (no progress for ${Math.round(stuckMs / 1000)}s, unstick failed). Try a different route, dig through, or build/tower.${doorHint(bot, goal)}`);
+        e.code = 'stuck';
+        throw e;
       }
       unstuckTried = true;
       try { await unstick(ctx); } catch (e) { if (e.message === 'Aborted') throw e; }
@@ -636,6 +672,26 @@ export async function moveTo(ctx, goal, opts = {}) {
       bot.pathfinder.setMovements(getMovements(ctx, { dig: opts.dig !== false }));
     }
   }
+}
+
+/** If there is a closed door close to the goal, tell the model to open it instead of digging. */
+function doorHint(bot, goal) {
+  try {
+    const g = goal?.pos ?? (goal && Number.isFinite(goal.x) && Number.isFinite(goal.z) ? { x: goal.x, y: goal.y ?? bot.entity.position.y, z: goal.z } : null);
+    if (!g) return '';
+    const door = scanBlocks(bot, doorIds(bot), { point: new Vec3(Math.floor(g.x), Math.floor(g.y), Math.floor(g.z)), maxDistance: 6, count: 4 })
+      .map((p) => bot.blockAt(p)).find((b) => b && !b.getProperties?.().open);
+    return door ? ` There is a closed ${door.name} at ${fmtPos(door.position)}: try use_block on it, then go_to again.` : '';
+  } catch { return ''; }
+}
+const doorIdCache = new WeakMap();
+function doorIds(bot) {
+  let ids = doorIdCache.get(bot.registry);
+  if (!ids) {
+    ids = new Set(Object.values(bot.registry.blocksByName).filter((b) => /(_door|_trapdoor|_fence_gate)$/.test(b.name) && !b.name.startsWith('iron_')).map((b) => b.id));
+    doorIdCache.set(bot.registry, ids);
+  }
+  return ids;
 }
 
 /** Walk to within `range` blocks of a position. */
@@ -663,14 +719,27 @@ export function playerExists(bot, name) {
   return Object.keys(bot.players).some((u) => u.toLowerCase() === n);
 }
 
+// Neutral mobs only attack when provoked (or at certain times); never auto-target / flee from / treat them as a threat.
+export const NEUTRAL_NAMES = new Set(['enderman', 'zombified_piglin', 'piglin', 'bee', 'wolf', 'polar_bear', 'llama', 'goat', 'dolphin', 'iron_golem']);
+export const PROTECTED_MOBS = new Set(['villager', 'wandering_trader', 'iron_golem', 'snow_golem', 'cat', 'wolf', 'horse', 'donkey', 'mule', 'parrot', 'allay', 'axolotl', 'armadillo', 'camel', 'llama']);
 export const HOSTILE_NAMES = new Set([
   'zombie', 'zombie_villager', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'creeper', 'spider', 'cave_spider', 'enderman', 'witch',
   'slime', 'magma_cube', 'phantom', 'pillager', 'vindicator', 'evoker', 'ravager', 'vex', 'blaze', 'ghast', 'wither_skeleton',
   'piglin_brute', 'hoglin', 'zoglin', 'guardian', 'elder_guardian', 'silverfish', 'endermite', 'shulker', 'warden', 'breeze', 'creaking',
 ]);
 
-export function isHostile(e) {
+const SPIDERS = new Set(['spider', 'cave_spider']);
+const isNight = (bot) => { const t = bot?.time?.timeOfDay; return typeof t === 'number' && t >= 12500 && t <= 23500; };
+/** Neutral = only fights when provoked (spiders are neutral by day when `bot` is given). */
+export function isNeutral(e, bot) {
+  if (!e) return false;
+  if (SPIDERS.has(e.name)) return !!bot && !isNight(bot);
+  return NEUTRAL_NAMES.has(e.name);
+}
+/** Hostile and actually a threat: neutral mobs (enderman, piglins, spiders ...) are excluded. */
+export function isHostile(e, bot) {
   if (!e || e.type === 'player') return false;
+  if (isNeutral(e, bot)) return false;
   return e.type === 'hostile' || HOSTILE_NAMES.has(e.name);
 }
 
@@ -692,11 +761,12 @@ export function pickInventoryItem(ctx, raw) {
 export function findNearestBlock(ctx, names, maxDistance = 32) {
   const ids = blockIdsFor(ctx, [].concat(names));
   if (!ids.length) return null;
-  return ctx.bot.findBlock({ matching: ids, maxDistance });
+  const p = scanBlocks(ctx.bot, new Set(ids), { maxDistance, count: 1 })[0];
+  return p ? ctx.bot.blockAt(p) : null;
 }
 
 /** Find an empty spot next to the bot (with solid floor) where a utility block (table/furnace/chest) can be placed. */
-export function findAdjacentSpot(bot, radius = 2) {
+export function findAdjacentSpot(bot, radius = 2, exclude = []) {
   const f = feetPos(bot);
   const cands = [];
   for (let dx = -radius; dx <= radius; dx++) {
@@ -707,7 +777,8 @@ export function findAdjacentSpot(bot, radius = 2) {
         const here = blockAtSafe(bot, p);
         const above = blockAtSafe(bot, p.offset(0, 1, 0));
         const below = blockAtSafe(bot, p.offset(0, -1, 0));
-        if (here && isAir(here) && isAir(above) && isSolid(below) && !isLiquid(below)) {
+        if (exclude.some((x) => x.equals(p))) continue;
+        if (here && isAir(here) && isAir(above) && isSolid(below) && !isLiquid(below) && !isInteractive(below)) {
           cands.push({ p, d: Math.abs(dx) + Math.abs(dz) + Math.abs(dy) });
         }
       }
@@ -722,20 +793,22 @@ export async function placeNearby(ctx, itemName) {
   const bot = ctx.bot;
   const item = findItem(bot, itemName);
   if (!item) throw new SkillError(`No ${itemName} in inventory to place.`);
+  const failed = [];
+  let lastErr;
   for (let i = 0; i < 4; i++) {
-    const spot = findAdjacentSpot(bot, 2);
-    if (!spot) throw new SkillError(`No free flat spot next to me to place a ${itemName}. Move to open ground first.`);
+    const spot = findAdjacentSpot(bot, 2, failed);
+    if (!spot) throw new SkillError(lastErr ? `Could not place ${itemName}: ${lastErr.message}` : `No free flat spot next to me to place a ${itemName}. Move to open ground first.`);
     try {
       await placeItemAt(ctx, item, spot, { stand: true });
       return spot;
     } catch (e) {
       if (e.message === 'Aborted') throw e;
-      if (i === 3) throw e;
-      // move a little and retry
-      await sleep(ctx, 200);
+      lastErr = e;
+      failed.push(spot);
+      await sleep(ctx, 150);
     }
   }
-  throw new SkillError(`Could not place ${itemName}.`);
+  throw new SkillError(`Could not place ${itemName}: ${lastErr?.message ?? 'unknown error'}.`);
 }
 
 /** Items on the ground near a position (entity name "item"). */
@@ -743,23 +816,112 @@ export function droppedItemsNear(bot, pos, radius = 6) {
   return Object.values(bot.entities).filter((e) => (e.name === 'item' || e.displayName === 'Item') && e.position.distanceTo(pos) <= radius);
 }
 
-/** Walk over to nearby dropped items so they get picked up (bounded). */
-export async function collectDrops(ctx, pos, { radius = 6, maxMs = 6000 } = {}) {
+/** All dropped item entities within radius of `pos` (default: the bot), nearest first, with the item name/count when known. */
+export function listDrops(bot, pos = bot.entity.position, radius = 16) {
+  return droppedItemsNear(bot, pos, radius)
+    .map((e) => {
+      let it = null;
+      try { it = e.getDroppedItem?.(); } catch { /* ignore */ }
+      return { e, name: it?.name ?? '?', count: it?.count ?? 1, d: e.position.distanceTo(bot.entity.position) };
+    })
+    .sort((a, b) => a.d - b.d);
+}
+
+/** Walk over to nearby dropped items so they get picked up (bounded, never digs). Returns {name: gained}. */
+export async function collectDrops(ctx, pos, { radius = 6, maxMs = 6000, filter } = {}) {
   const bot = ctx.bot;
-  const end = Date.now() + maxMs;
+  const before = inventoryCounts(bot);
+  const end = Date.now() + Math.min(maxMs, Math.max(500, timeLeft(ctx) - 1500));
   let guard = 0;
-  while (Date.now() < end && guard++ < 6) {
+  const skipped = new Set();
+  while (Date.now() < end && guard++ < 12) {
     checkAbort(ctx);
-    const drops = droppedItemsNear(bot, pos, radius).sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position));
+    const drops = listDrops(bot, pos, radius).filter((d) => !skipped.has(d.e.id) && (!filter || filter(d)));
     if (!drops.length) break;
-    const e = drops[0];
-    if (e.position.distanceTo(bot.entity.position) > 1.0) {
+    const d = drops[0];
+    if (d.d > 1.0) {
       try {
-        await moveTo(ctx, new goals.GoalNear(e.position.x, e.position.y, e.position.z, 0.7), { timeoutMs: Math.max(1500, end - Date.now()), noUnstick: true, label: 'dropped item' });
-      } catch (err) { if (err.message === 'Aborted') throw err; break; }
+        await moveTo(ctx, new goals.GoalNear(d.e.position.x, d.e.position.y, d.e.position.z, 0.7), { timeoutMs: Math.max(1500, end - Date.now()), noUnstick: true, dig: false, label: 'dropped item' });
+      } catch (err) { if (err.message === 'Aborted') throw err; skipped.add(d.e.id); continue; }
     }
     await sleep(ctx, 250);
+    if (bot.entities[d.e.id]) skipped.add(d.e.id); // still there after reaching it: inventory full / not pickable
   }
+  await sleep(ctx, 150);
+  const after = inventoryCounts(bot);
+  const gained = {};
+  for (const [n, c] of Object.entries(after)) if (c > (before[n] ?? 0)) gained[n] = c - (before[n] ?? 0);
+  return gained;
+}
+
+// ---------------------------------------------------------------- fast block scanning
+
+const stateToBlock = new WeakMap();
+function stateMap(registry) {
+  let m = stateToBlock.get(registry);
+  if (!m) {
+    m = new Int32Array(Math.max(...Object.keys(registry.blocksByStateId).map(Number)) + 2).fill(-1);
+    for (const [sid, b] of Object.entries(registry.blocksByStateId)) m[sid] = b.id;
+    stateToBlock.set(registry, m);
+  }
+  return m;
+}
+
+/**
+ * Find blocks whose block id is in `ids` (Set<number>) around `point`. Much faster than bot.findBlocks on 1.21.5+/26.x,
+ * where uniform (all-air / all-stone) chunk sections are SingleValueContainers without a palette and findBlocks
+ * brute-forces all 4096 blocks of every one. Returns Vec3[] sorted by distance, at most `count`.
+ */
+export function scanBlocks(bot, ids, { point, maxDistance = 32, count = 64, filter } = {}) {
+  const p = (point ?? bot.entity.position).floored();
+  const map = stateMap(bot.registry);
+  const minY = bot.game?.minY ?? -64;
+  const nSections = (bot.game?.height ?? 384) >> 4;
+  const r = Math.ceil(maxDistance);
+  const out = [];
+  const x0 = (p.x - r) >> 4, x1 = (p.x + r) >> 4, z0 = (p.z - r) >> 4, z1 = (p.z + r) >> 4;
+  const s0 = Math.max(0, (p.y - r - minY) >> 4), s1 = Math.min(nSections - 1, (p.y + r - minY) >> 4);
+  const idSet = ids instanceof Set ? ids : new Set(ids);
+  const maxSq = maxDistance * maxDistance;
+  for (let cx = x0; cx <= x1; cx++) {
+    for (let cz = z0; cz <= z1; cz++) {
+      const col = bot.world.getColumn(cx, cz);
+      if (!col) continue;
+      for (let si = s0; si <= s1; si++) {
+        const sec = col.sections[si];
+        if (!sec || !sec.data) continue;
+        const data = sec.data;
+        let states = null;
+        if (data.palette) states = data.palette;
+        else if (data.value !== undefined) states = [data.value];
+        if (states) {
+          let any = false;
+          for (const sid of states) if (idSet.has(map[sid])) { any = true; break; }
+          if (!any) continue;
+        }
+        const baseX = cx << 4, baseZ = cz << 4, baseY = si * 16 + minY;
+        for (let y = 0; y < 16; y++) {
+          const wy = baseY + y;
+          const dy = wy - p.y;
+          if (dy * dy > maxSq) continue;
+          for (let z = 0; z < 16; z++) {
+            const dz = baseZ + z - p.z;
+            for (let x = 0; x < 16; x++) {
+              const sid = data.get((y << 8) | (z << 4) | x);
+              if (!idSet.has(map[sid])) continue;
+              const dx = baseX + x - p.x;
+              if (dx * dx + dy * dy + dz * dz > maxSq) continue;
+              const v = new Vec3(baseX + x, wy, baseZ + z);
+              if (filter && !filter(v)) continue;
+              out.push(v);
+            }
+          }
+        }
+      }
+    }
+  }
+  out.sort((a, b) => a.distanceSquared(p) - b.distanceSquared(p));
+  return out.length > count ? out.slice(0, count) : out;
 }
 
 /** Goal to get within reach of a block. Non-solid blocks (crops, flowers, cane) cannot be ray-cast, so use a distance goal. */

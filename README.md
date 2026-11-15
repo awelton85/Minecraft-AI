@@ -21,12 +21,12 @@ AI-controlled players for Minecraft Java Edition. Each bot is a real player on y
 ## How it fits together
 
 ```
- Windows 11 desktop                                  Windows 10 laptop
+ Host PC                                             Player PC (can be the same machine)
  ┌──────────────────────────────────────┐            ┌────────────────────────────┐
- │ Paper server 26.1.2 + ViaVersion      │◀──────────│ Minecraft 26.3 (you play)   │
+ │ Paper server 26.1.2 + ViaVersion      │◀──────────│ Minecraft (latest, you play)│
  │        ▲ (bots join as players)       │           │                             │
  │ node src/index.js                     │           │ Browser: dashboard + voice  │
- │   BotRunner ─ Agent ─ skills          │◀──https───│  https://<desktop-ip>:3000  │
+ │   BotRunner ─ Agent ─ skills          │◀──https───│  https://<host-ip>:3000     │
  │   web dashboard :3000                 │           └────────────────────────────┘
  │        │                              │
  │        ├──▶ Claude API (internet)     │
@@ -34,20 +34,22 @@ AI-controlled players for Minecraft Java Edition. Each bot is a real player on y
  └──────────────────────────────────────┘
 ```
 
-**Why server version 26.1.2?** Mineflayer currently supports Minecraft up to 26.1. The server runs the newest version the bots can handle, and the ViaVersion plugin lets your 26.3 client join it anyway. You keep the latest launcher version and don't need to change anything on the laptop.
+**Why server version 26.1.2?** Mineflayer currently supports Minecraft up to 26.1. The server runs the newest version the bots can handle, and the ViaVersion plugin lets newer clients (e.g. 26.3) join it anyway. Players keep using the latest launcher version.
 
 ## Quick start (Windows)
 
+The *host PC* runs the server and the bots; the *player PC* is where you play. They can be the same computer.
+
 Full step-by-step guide: **[docs/SETUP-WINDOWS.md](docs/SETUP-WINDOWS.md)**. Short version:
 
-1. **On the desktop**, install [Node.js LTS](https://nodejs.org/) (20+) and Java 25 (`winget install EclipseAdoptium.Temurin.25.JDK`).
-2. Download this repository to the desktop, then double-click **`setup.bat`**. It installs dependencies, then downloads Paper and ViaVersion into `server\`, after you accept the Minecraft EULA.
+1. **On the host PC**, install [Node.js LTS](https://nodejs.org/) (20+) and Java 25 (`winget install EclipseAdoptium.Temurin.25.JDK`).
+2. Download this repository to the host PC, then double-click **`setup.bat`**. It installs dependencies, then downloads Paper and ViaVersion into `server\`, after you accept the Minecraft EULA.
 3. Start the server: **`server\start-server.bat`**.
 4. Start the bots: **`start-bots.bat`**. On first run it creates `config\settings.json` and prints the dashboard address.
-5. Open the dashboard (`https://<desktop-ip>:3000`) and accept the self-signed certificate warning. In **Settings**:
+5. Open the dashboard (`https://<host-ip>:3000`, or `https://localhost:3000` on the host itself) and accept the self-signed certificate warning. In **Settings**:
    - Put **your Minecraft username** in *Owners*. The bots only take orders from owners.
    - Choose **Claude API** and paste your API key, or choose **LM Studio** and pick a model.
-6. **On the laptop**, open Minecraft and go to Multiplayer → Add Server → `<desktop-ip>`.
+6. **On the player PC**, open Minecraft and go to Multiplayer → Add Server → `<host-ip>` (or `localhost`).
 7. Say hi in chat: `Steve_AI, come here and help me build a house`.
 
 ## Talking to the bots

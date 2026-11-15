@@ -540,21 +540,21 @@ async function main() {
   info('\nStart the server:');
   info(IS_WIN ? `  ${path.join(dir, 'start-server.bat')}   (double-click it)` : `  ${path.join(dir, 'start-server.sh')}`);
   info('  Type "stop" in the server console to shut down cleanly.');
-  info('\nBots: point them at host "localhost" (or the desktop IP), port ' + port + ', and set the bot version to "' +
+  info('\nBots: point them at host "localhost" (the default; this PC), port ' + port + ', and set the bot version to "' +
     (version.split('.').slice(0, 2).join('.')) + '" if auto-detect has trouble.');
 
-  info('\nJoining from the laptop (Minecraft Java ' + 'latest, e.g. 26.3):');
+  info('\nJoining from another PC on your network (Minecraft Java, latest version is fine):');
   const addrs = lanAddresses();
   if (addrs.length) {
     for (const a of addrs) info(`  ${a.address}${port === '25565' ? '' : ':' + port}   (${a.name})`);
   } else {
-    warn('  No LAN IPv4 address found - run `ipconfig` on the desktop and use its IPv4 Address.');
+    warn('  No LAN IPv4 address found - run `ipconfig` on this PC and use its IPv4 Address.');
   }
   info(`  ViaVersion lets a newer client (like 26.3) join this ${version} server - just use the normal "latest release".`);
   info(`  Without ViaVersion you would have to pick an installation with exactly ${version} in the launcher`);
   info(`  (Installations > New installation > Version: release ${version}).`);
 
-  info('\nWindows Firewall (desktop, run PowerShell as Administrator):');
+  info('\nWindows Firewall (on this PC, only needed for players on other PCs; run PowerShell as Administrator):');
   info(`  New-NetFirewallRule -DisplayName "Minecraft Server (TCP ${port})" -Direction Inbound -Protocol TCP -LocalPort ${port} -Action Allow -Profile Private`);
   info('  Also make sure the home network is set to "Private", and allow Java if Windows asks on first start.');
   warn('Security: the server is in offline mode for the bots - keep it LAN-only, never port-forward ' + port + '.');
