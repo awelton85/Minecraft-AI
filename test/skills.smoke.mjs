@@ -680,10 +680,11 @@ tests.deadline = async () => {
   // H6: deadlines produce partial progress as success, aborts carry progress
   await setup([`tp ${B} -6 95 -8`]);
   await sleep(2000);
-  ctx.deadline = Date.now() + 14000;
+  // Long enough to reach and fell a tree near spawn; the point is the bounded, partial result.
+  ctx.deadline = Date.now() + 40000;
   let t0 = Date.now();
   let r = await run(ctx, 'collect_block', { block: 'log', count: 60 });
-  check('collect_block with 14s deadline returns partial success in time', r.ok && /Collected|Broke/.test(r.out) && Date.now() - t0 < 17000, `${Date.now() - t0}ms ${r.out ?? r.err?.message}`);
+  check('collect_block with 40s deadline returns partial success in time', r.ok && /Collected|Broke/.test(r.out) && Date.now() - t0 < 44000, `${Date.now() - t0}ms ${r.out ?? r.err?.message}`);
   ctx.deadline = Date.now() + 6000;
   t0 = Date.now();
   r = await run(ctx, 'wait', { seconds: 120 });
