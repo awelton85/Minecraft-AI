@@ -2,6 +2,7 @@
 import {
   SkillError, goals, Vec3, moveTo, goNear, checkAbort, sleep, fmtPos, vecFrom, numArg, intArg, findPlayerEntity,
   playerExists, stopEverything, isSolid, isAir, isLiquid, blockAtSafe, feetPos, towerUp, inHole, digBlock, findPlaceableJunk, getMovements,
+  timeLeft, outOfTime, budgetMs, scanBlocks, surfaceCells, haltPathfinder,
 } from './util.js';
 
 const visited = new WeakMap(); // bot -> Set of 32x32 cells already explored
@@ -17,7 +18,7 @@ const cellOf = (x, z) => `${Math.floor(x / 32)},${Math.floor(z / 32)}`;
 export const movementSkills = [
   {
     name: 'go_to',
-    description: 'Walk (pathfind) to coordinates. Digs/places blocks when needed. Use `range` to stop within N blocks of the point (default 1). If y is omitted only x/z are targeted (ends at ground level). Fails with a clear message if unreachable or stuck.',
+    description: 'Walk (pathfind) to coordinates. Digs/places blocks when needed (never breaks doors/builds). `range`: stop within N blocks (default 1). If y is omitted only x/z are targeted and the final height is wherever the path ends (could be underground). Long trips may stop early with progress: call again. Fails clearly if unreachable.',
     params: {
       type: 'object',
       properties: {
@@ -43,8 +44,20 @@ export const movementSkills = [
       if (args.y === undefined || args.y === null) goal = new goals.GoalNearXZ(x, z, Math.max(range, 1));
       else if (range <= 0.5) goal = new goals.GoalBlock(Math.floor(x), Math.floor(numArg(args.y)), Math.floor(z));
       else goal = new goals.GoalNear(x, numArg(args.y), z, range);
-      await moveTo(ctx, goal, { label: `${Math.round(x)}, ${args.y ?? '~'}, ${Math.round(z)}` });
-      return `Arrived at ${fmtPos(ctx.bot.entity.position)}.`;
+      const bot = ctx.bot;
+      const start = bot.entity.position.clone();
+      const tgt = new Vec3(x, args.y ?? start.y, z);
+      const label = `${Math.round(x)}, ${args.y ?? '~'}, ${Math.round(z)}`;
+      const toGo = () => Math.round(args.y === undefined || args.y === null ? Math.hypot(bot.entity.position.x - x, bot.entity.position.z - z) : bot.entity.position.distanceTo(tgt));
+      try {
+        await moveTo(ctx, goal, { label });
+      } catch (err) {
+        const moved = Math.round(bot.entity.position.distanceTo(start));
+        if (err.message === 'Aborted' && moved >= 2) throw new SkillError(`Aborted after moving ${moved} blocks; now at ${fmtPos(bot.entity.position)}, ${toGo()} blocks from ${label}.`);
+        if (err.code === 'timeout' && moved >= 3) return `Moved ${moved} blocks toward ${label}; now at ${fmtPos(bot.entity.position)}, ${toGo()} blocks to go. Call go_to again to continue.`;
+        throw err;
+      }
+      return `Arrived at ${fmtPos(bot.entity.position)}${args.y === undefined || args.y === null ? ' (height not specified)' : ''}.`;
     },
   },
   {
@@ -85,30 +98,41 @@ export const movementSkills = [
     async run(ctx, args) {
       const bot = ctx.bot;
       const dist = numArg(args.distance, 3);
-      const seconds = Math.min(600, numArg(args.seconds, 60));
+      const wanted = Math.min(600, numArg(args.seconds, 60));
+      const seconds = Math.max(1, Math.min(wanted, (timeLeft(ctx) - 2000) / 1000));
       let e = findPlayerEntity(bot, args.name);
       if (!e) throw new SkillError(`I can't see ${args.name} nearby${playerExists(bot, args.name) ? ' (online but far away; ask for coordinates and use go_to)' : ' (not online)'}.`);
       bot.pathfinder.setMovements(getMovements(ctx));
-      bot.pathfinder.setGoal(new goals.GoalFollow(e, dist), true);
+      let followed = e;
+      bot.pathfinder.setGoal(new goals.GoalFollow(followed, dist), true);
       const end = Date.now() + seconds * 1000;
       let lostSince = 0;
+      const start = bot.entity.position.clone();
+      const progress = () => `now at ${fmtPos(bot.entity.position)} (moved ${Math.round(bot.entity.position.distanceTo(start))} blocks)`;
       try {
         while (Date.now() < end) {
           await sleep(ctx, 500);
-          e = findPlayerEntity(bot, args.name);
+          e = findPlayerEntity(bot, args.name); // the entity object is replaced on respawn / teleport / re-entering view
           if (!e) {
             lostSince ||= Date.now();
-            if (Date.now() - lostSince > 10000) return `Lost sight of ${args.name}; stopped following at ${fmtPos(bot.entity.position)}.`;
-          } else if (lostSince) {
-            lostSince = 0;
-            bot.pathfinder.setGoal(new goals.GoalFollow(e, dist), true);
+            if (Date.now() - lostSince > 10000) return `Lost sight of ${args.name}; stopped following, ${progress()}.`;
+            continue;
+          }
+          lostSince = 0;
+          if (e !== followed || !bot.pathfinder.goal) {
+            followed = e;
+            bot.pathfinder.setMovements(getMovements(ctx));
+            bot.pathfinder.setGoal(new goals.GoalFollow(followed, dist), true);
           }
         }
+      } catch (err) {
+        if (err.message === 'Aborted') throw new SkillError(`Aborted; stopped following ${args.name}, ${progress()}.`);
+        throw err;
       } finally {
-        try { bot.pathfinder.setGoal(null); bot.pathfinder.stop(); } catch { /* ignore */ }
+        haltPathfinder(bot);
         bot.clearControlStates();
       }
-      return `Followed ${args.name} for ${seconds}s; now at ${fmtPos(bot.entity.position)}.`;
+      return `Followed ${args.name} for ${Math.round(seconds)}s; ${progress()}.${seconds < wanted ? ' (cut short by the action time limit; call again to keep following)' : ''}`;
     },
   },
   {
@@ -149,19 +173,19 @@ export const movementSkills = [
       let moved = 0;
       let fails = 0;
       let rot = 0;
-      while (moved < total - 4 && fails < 4) {
+      while (moved < total - 4 && fails < 4 && !outOfTime(ctx, 3000)) {
         checkAbort(ctx);
         const step = Math.min(32, total - moved);
         const cur = bot.entity.position;
         const a = Math.atan2(dz, dx) + rot;
         const tx = cur.x + Math.cos(a) * step, tz = cur.z + Math.sin(a) * step;
         try {
-          await moveTo(ctx, new goals.GoalNearXZ(tx, tz, 4), { label: `exploration point ${Math.round(tx)}, ${Math.round(tz)}`, timeoutMs: 40000 });
+          await moveTo(ctx, new goals.GoalNearXZ(tx, tz, 4), { label: `exploration point ${Math.round(tx)}, ${Math.round(tz)}`, timeoutMs: Math.min(40000, budgetMs(ctx, 40000)) });
           seen.add(cellOf(bot.entity.position.x, bot.entity.position.z));
           moved = Math.hypot(bot.entity.position.x - start.x, bot.entity.position.z - start.z);
           rot = 0;
         } catch (err) {
-          if (err.message === 'Aborted') throw err;
+          if (err.message === 'Aborted') throw new SkillError(`Aborted while exploring; now at ${fmtPos(bot.entity.position)} (${Math.round(Math.hypot(bot.entity.position.x - start.x, bot.entity.position.z - start.z))} blocks from the start).`);
           fails++;
           rot = (fails % 2 ? 1 : -1) * (Math.PI / 4) * Math.ceil(fails / 2);
         }
@@ -256,14 +280,14 @@ export const movementSkills = [
       const tried = [];
       for (let round = 0; round < 3; round++) {
         checkAbort(ctx);
-        const cands = bot.findBlocks({ matching: ids, maxDistance: 32, count: 400, useExtraInfo: (b) => standable(b.position) })
-          .sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position))
+        if (outOfTime(ctx, 3000)) throw new SkillError(`Still underground at ${fmtPos(bot.entity.position)} (y=${Math.round(bot.entity.position.y)}) when time ran out; call come_up_to_surface again.`);
+        const cands = surfaceCells(bot, { radius: 32, max: 200 }).filter((p) => standable(p)).slice(0, 40)
           .filter((p) => !tried.some((t) => t.equals(p)));
         if (cands.length) {
           const c = cands[0];
           tried.push(c);
           try {
-            await moveTo(ctx, new goals.GoalBlock(c.x, c.y, c.z), { label: 'the surface', timeoutMs: 60000 });
+            await moveTo(ctx, new goals.GoalBlock(c.x, c.y, c.z), { label: 'the surface', timeoutMs: budgetMs(ctx, 60000, 3000) });
             return `Back on the surface at ${fmtPos(bot.entity.position)} (was y=${Math.round(startY)}).`;
           } catch (err) {
             if (err.message === 'Aborted') throw err;
@@ -279,7 +303,7 @@ export const movementSkills = [
         }
         const target = Math.floor(startY) + 12 * (round + 1);
         try {
-          await moveTo(ctx, new goals.GoalY(target), { label: `height y=${target}`, timeoutMs: 45000 });
+          await moveTo(ctx, new goals.GoalY(target), { label: `height y=${target}`, timeoutMs: budgetMs(ctx, 45000, 3000) });
         } catch (err) {
           if (err.message === 'Aborted') throw err;
           // last resort: pillar up manually

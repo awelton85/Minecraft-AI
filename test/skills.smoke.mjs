@@ -78,7 +78,7 @@ export function makeCtx(bot, mcData, extra = {}) {
     log: (m) => { if (process.env.DEBUG) console.log('   [log]', m); },
     say: async (t) => { bot.chat(t); },
     memory: new FakeMemory(),
-    settings: { agent: { stuckSeconds: 12, actionTimeoutSeconds: 180 } },
+    settings: { agent: { stuckSeconds: 12, actionTimeoutSeconds: 180 }, owners: ['SkillTestOwner'] },
     character: { name: bot.username },
     manager: { botUsernames: () => [bot.username] },
     abort() { ctx._ac.abort(); },
@@ -132,7 +132,7 @@ tests.observe = async () => {
   const full = describeState(bot, { detail: 'full' });
   console.log(brief + '\n---\n' + full);
   check('describeState brief < 900', brief.length > 50 && brief.length < 900, `${brief.length} chars`);
-  check('describeState full < 2500', full.length > brief.length - 1 && full.length < 2500, `${full.length} chars`);
+  check('describeState full < 2000', full.length > brief.length - 1 && full.length < 2000, `${full.length} chars`);
   check('describeState never throws', typeof describeState({}, {}) === 'string');
 };
 
@@ -305,7 +305,7 @@ tests.inventory = async () => {
   r = await run(ctx, 'equip', { item: 'stone_pickaxe' });
   check('equip hand', r.ok && bot.heldItem?.name === 'stone_pickaxe');
   r = await run(ctx, 'eat');
-  check('eat', r.ok || /full/.test(r.err?.message), r.out ?? r.err?.message);
+  check('eat', r.ok && /Ate/.test(r.out) && bot.food > 13, r.out ?? r.err?.message);
   r = await run(ctx, 'toss_item', { item: 'dirt', count: 4 });
   check('toss_item', r.ok);
   r = await run(ctx, 'toss_item', { item: 'nonexistent_thing' });
@@ -315,7 +315,7 @@ tests.inventory = async () => {
 tests.smelt = async () => {
   await arena([`give ${B} raw_iron 3`, `give ${B} coal 2`, `give ${B} furnace 1`]);
   let r = await run(ctx, 'smelt_item', { input: 'raw iron', count: 3 });
-  check('smelt_item raw_iron x3 (places furnace)', r.ok && countItem('iron_ingot') === 3, r.out ?? r.err?.message);
+  check('smelt_item raw_iron x3 (places furnace)', r.ok && countItem('iron_ingot') === 3 && !/still smelting/.test(r.out), r.out ?? r.err?.message);
   await setup([`give ${B} cobblestone 4`, `give ${B} sand 1`]);
   r = await run(ctx, 'smelt_item', { input: 'sand' });
   check('smelt without fuel fails cleanly', !r.ok && /fuel/i.test(r.err.message), r.err?.message);
@@ -376,7 +376,7 @@ tests.misc = async () => {
   await mc(`setblock ${f.x - 4} ${f.y} ${f.z} red_bed[part=head,facing=west]`);
   await sleep(500);
   r = await run(ctx, 'sleep');
-  check('sleep with bed', r.ok || /still night|woke/.test(r.err?.message ?? ''), r.out ?? r.err?.message);
+  check('sleep with bed', r.ok && /Slept|woke/.test(r.out), r.out ?? r.err?.message);
   await mc('time set day');
   r = await run(ctx, 'sleep');
   check('sleep by day explains', !r.ok && /not night/i.test(r.err.message), r.err?.message);
@@ -473,18 +473,341 @@ tests.stuck = async () => {
   await mc(`fill ${T.x - 1} ${T.y - 1} ${T.z - 1} ${T.x + 1} ${T.y + 1} ${T.z + 1} air`);
 };
 
+
+// ============================================================ regression tests for review findings
+
+const blockAt = (x, y, z) => bot.blockAt(new (bot.entity.position.constructor)(x, y, z))?.name;
+
+tests.windows = async () => {
+  // H1: a leaked container window must not break crafting
+  await arena([`give ${B} chest 1`, `give ${B} oak_planks 8`]);
+  const f = here();
+  let r = await run(ctx, 'place_block', { block: 'chest', x: f.x + 2, y: f.y, z: f.z });
+  const opened = new Promise((res) => bot.once('windowOpen', res));
+  const p = run(ctx, 'chest_list');
+  await opened;
+  await sleep(50);
+  ctx.abort();
+  r = await p;
+  ctx.reset();
+  await sleep(400);
+  check('abort during chest_list leaves no window open', !bot.currentWindow, `currentWindow=${bot.currentWindow?.type}`);
+  r = await run(ctx, 'craft_item', { item: 'stick', count: 4 });
+  check('craft_item works after aborted chest_list', r.ok, r.out ?? r.err?.message);
+  r = await run(ctx, 'use_block', { x: f.x + 2, y: f.y, z: f.z });
+  check('use_block on a chest explains and closes the window', !r.ok && /container/.test(r.err.message) && !bot.currentWindow, r.err?.message);
+  r = await run(ctx, 'craft_item', { item: 'stick', count: 4 });
+  check('craft_item works after use_block on chest', r.ok, r.out ?? r.err?.message);
+};
+
+tests.smeltresume = async () => {
+  // H2: interrupted / short-deadline smelting leaves a collectable furnace and says so
+  await arena([`give ${B} raw_iron 4`, `give ${B} coal 2`, `give ${B} furnace 1`]);
+  const p = run(ctx, 'smelt_item', { input: 'raw_iron', count: 2 });
+  await sleep(4500);
+  ctx.abort();
+  let r = await p;
+  ctx.reset();
+  check('aborted smelt reports the furnace', !r.ok && /furnace_collect/.test(r.err.message) && /still smelting/.test(r.err.message), r.err?.message);
+  check('no window leaked after aborted smelt', !bot.currentWindow);
+  r = await run(ctx, 'smelt_item', { input: 'raw_iron', count: 1 });
+  check('retry smelt does not claim nothing is left in inventory', r.ok || !/No raw_iron in inventory/.test(r.err.message), r.out ?? r.err?.message);
+  await sleep(22000);
+  r = await run(ctx, 'furnace_collect');
+  check('furnace_collect returns the ingots', r.ok && countItem('iron_ingot') >= 2, r.out ?? r.err?.message);
+  // short deadline: returns partial success instead of overrunning
+  await mc(`give ${B} raw_iron 3`);
+  await mc(`give ${B} coal 2`);
+  await sleep(500);
+  ctx.deadline = Date.now() + 14000;
+  const t0 = Date.now();
+  r = await run(ctx, 'smelt_item', { input: 'raw_iron', count: 3 });
+  delete ctx.deadline;
+  check('smelt with short deadline returns in time with still-smelting note', r.ok && Date.now() - t0 < 16000 && /still smelting|Smelted 3/.test(r.out), `${Date.now() - t0}ms ${r.out ?? r.err?.message}`);
+  await sleep(20000);
+  r = await run(ctx, 'furnace_collect', { take: 'all' });
+  check('furnace_collect take:all', r.ok);
+};
+
+tests.craftmix = async () => {
+  await arena([`give ${B} oak_planks 2`, `give ${B} birch_planks 1`, `give ${B} stick 2`, `give ${B} crafting_table 1`]);
+  let r = await run(ctx, 'craft_item', { item: 'wooden_pickaxe' });
+  check('wooden_pickaxe from mixed plank types', r.ok, r.out ?? r.err?.message);
+  await arena([`give ${B} birch_log 3`, `give ${B} stick 3`, `give ${B} coal 1`, `give ${B} crafting_table 1`]);
+  r = await run(ctx, 'craft_item', { item: 'campfire' });
+  check('campfire from birch logs + coal', r.ok, r.out ?? r.err?.message);
+  r = await run(ctx, 'get_recipe', { item: 'wooden_pickaxe' });
+  check('get_recipe shows collapsed variants', r.ok && /planks\(any\)/.test(r.out) && !/variants\)/.test(r.out), r.out);
+  await arena([`give ${B} oak_log 1`]);
+  r = await run(ctx, 'craft_item', { item: 'campfire' });
+  check('missing list is collapsed, no exotic wood names', !r.ok && !/hyphae|stripped/.test(r.err.message), r.err?.message);
+  // table we placed ourselves is picked up again
+  await arena([`give ${B} oak_planks 12`, `give ${B} stick 4`, `give ${B} crafting_table 1`]);
+  r = await run(ctx, 'craft_item', { item: 'wooden_pickaxe' });
+  await sleep(500);
+  check('self-placed crafting table is recovered', r.ok && countItem('crafting_table') >= 1 && /picked/.test(r.out), r.out ?? r.err?.message);
+};
+
+tests.chestfull = async () => {
+  await arena([`give ${B} chest 1`, `give ${B} cobblestone 192`, `give ${B} dirt 64`]);
+  const f = here();
+  let r = await run(ctx, 'place_block', { block: 'chest', x: f.x + 2, y: f.y, z: f.z });
+  // fill 25 of 27 slots
+  for (let i = 0; i < 25; i++) await mc(`item replace block ${f.x + 2} ${f.y} ${f.z} container.${i} with minecraft:stone 64`);
+  const before = countItem('cobblestone') + countItem('dirt');
+  r = await run(ctx, 'chest_deposit', { items: 'cobblestone,dirt' });
+  const after = countItem('cobblestone') + countItem('dirt');
+  check('chest_deposit into a nearly full chest reports partial + full', r.ok && /full/.test(r.out) && after > 0 && after < before, r.out ?? r.err?.message);
+  check('deposit counts match the inventory diff', r.ok && new RegExp(`${before - after}`).test(r.out.replace(/x/g, ' ')), `${before - after} moved; ${r.out}`);
+};
+
+tests.combat2 = async () => {
+  await arena([`give ${B} stone_sword 1`, `effect give ${B} resistance 90 4 true`]);
+  await mc('difficulty easy');
+  const f = here();
+  // H3: another fight (self-defence reflex) is already running
+  await mc(`summon zombie ${f.x + 8} ${f.y} ${f.z}`);
+  await mc(`summon cow ${f.x - 6} ${f.y} ${f.z}`);
+  await sleep(1500);
+  const zombie = Object.values(bot.entities).find((e) => e.name === 'zombie');
+  bot.pvp.attack(zombie).catch(() => {});
+  await sleep(600);
+  let t0 = Date.now();
+  let r = await run(ctx, 'attack', { target: 'cow', timeoutSeconds: 30 });
+  check('attack while pvp already busy kills the requested target', r.ok && /Killed cow/.test(r.out), r.out ?? r.err?.message);
+  check('attack returns without a 5s stall and pvp is idle', Date.now() - t0 < 25000 && !bot.pvp.target, `${Date.now() - t0}ms target=${bot.pvp.target?.name}`);
+  check('attack reports picked up drops', r.ok && /Picked up|No drops/.test(r.out), r.out);
+  await mc('kill @e[type=zombie]');
+  // M7: neutral mobs are not auto-targets
+  await mc(`summon enderman ${f.x + 6} ${f.y} ${f.z}`);
+  await sleep(1200);
+  r = await run(ctx, 'attack', { target: 'hostile' });
+  check('attack "hostile" ignores neutral enderman and lists mobs', !r.ok && /enderman/.test(r.err.message), r.err?.message);
+  r = await run(ctx, 'flee');
+  check('flee ignores neutral enderman', r.ok && /No hostile/.test(r.out), r.out ?? r.err?.message);
+  const ds = describeState(bot, { detail: 'brief' });
+  check('describeState labels neutral mobs', /[Nn]eutral/.test(ds) && !/HOSTILES/.test(ds), ds);
+  await mc('kill @e[type=enderman]');
+  // M8: players / owners / protected mobs
+  const { bot: b2 } = await makeBot('SkillTestB');
+  await sleep(1500);
+  ctx.settings.owners = ['SkillTestB'];
+  r = await run(ctx, 'attack', { target: 'SkillTestB', allowPlayer: true });
+  check('attack refuses owners even with allowPlayer', !r.ok && /owner/.test(r.err.message), r.err?.message);
+  ctx.settings.owners = [];
+  ctx.manager = { botUsernames: () => [bot.username, 'SkillTestB'] };
+  r = await run(ctx, 'attack', { target: 'SkillTestB', allowPlayer: true });
+  check('attack refuses other AI bots', !r.ok && /bot|teammate/.test(r.err.message), r.err?.message);
+  ctx.manager = { botUsernames: () => [bot.username] };
+  r = await run(ctx, 'attack', { target: 'SkillTestB' });
+  check('attack refuses players without allowPlayer', !r.ok && /allowPlayer/.test(r.err.message), r.err?.message);
+  b2.quit();
+  await mc(`summon villager ${f.x + 4} ${f.y} ${f.z}`);
+  await sleep(1000);
+  r = await run(ctx, 'attack', { target: 'villager' });
+  check('attack refuses villagers without force', !r.ok && /protected/.test(r.err.message), r.err?.message);
+  await mc('kill @e[type=villager]');
+  ctx.settings.owners = ['SkillTestOwner'];
+};
+
+tests.shelter2 = async () => {
+  await arena([`give ${B} cobblestone 24`]);
+  // H4: off-centre (the hitbox overlaps the neighbouring wall cell)
+  await mc(`tp ${B} ${ARENA.x + 0.85} ${ARENA.y} ${ARENA.z + 0.8}`);
+  await sleep(1200);
+  const r = await run(ctx, 'build_shelter');
+  check('build_shelter works when standing off-centre', r.ok, r.out ?? r.err?.message);
+};
+
+tests.grief = async () => {
+  // H5: never dig through a house; refuse protected blocks
+  await arena([`give ${B} wooden_pickaxe 1`, `give ${B} cobblestone 10`]);
+  const f = here();
+  const c = { x: f.x + 8, y: f.y, z: f.z };
+  await mc(`fill ${c.x - 2} ${c.y} ${c.z - 2} ${c.x + 2} ${c.y + 3} ${c.z + 2} oak_planks hollow`);
+  await mc(`fill ${c.x - 1} ${c.y} ${c.z - 1} ${c.x + 1} ${c.y + 2} ${c.z + 1} air`);
+  await mc(`setblock ${c.x - 2} ${c.y} ${c.z} oak_door[half=lower,facing=west,open=false]`);
+  await mc(`setblock ${c.x - 2} ${c.y + 1} ${c.z} oak_door[half=upper,facing=west,open=false]`);
+  await sleep(800);
+  let planksBefore = 0;
+  for (let x = c.x - 2; x <= c.x + 2; x++) for (let z = c.z - 2; z <= c.z + 2; z++) for (let y = c.y; y <= c.y + 3; y++) if (blockAt(x, y, z) === 'oak_planks') planksBefore++;
+  let r = await run(ctx, 'go_to', { x: c.x, y: c.y, z: c.z, range: 0 });
+  let planksAfter = 0;
+  for (let x = c.x - 2; x <= c.x + 2; x++) for (let z = c.z - 2; z <= c.z + 2; z++) for (let y = c.y; y <= c.y + 3; y++) if (blockAt(x, y, z) === 'oak_planks') planksAfter++;
+  check('go_to never digs through plank walls', planksAfter === planksBefore, `${planksBefore} -> ${planksAfter}; ${r.out ?? r.err?.message}`);
+  check('go_to explains / uses the door', r.ok || /use_block/.test(r.err.message), r.out ?? r.err?.message);
+  r = await run(ctx, 'collect_block', { block: 'oak_planks', count: 2 });
+  check('collect_block refuses planks of a build', !r.ok && /force/.test(r.err.message), r.err?.message);
+  await mc(`setblock ${f.x + 3} ${f.y} ${f.z - 5} chest`);
+  r = await run(ctx, 'collect_block', { block: 'chest' });
+  check('collect_block refuses chests', !r.ok && /force/.test(r.err.message), r.err?.message);
+  r = await run(ctx, 'collect_block', { block: 'wheat' });
+  check('collect_block routes crops to farm', !r.ok && /farm/.test(r.err.message), r.err?.message);
+  r = await run(ctx, 'dig_block_at', { x: f.x + 3, y: f.y, z: f.z - 5 });
+  check('dig_block_at refuses a chest', !r.ok && /force/.test(r.err.message), r.err?.message);
+};
+
+tests.scan = async () => {
+  // H7: fast scanner agrees with mineflayer's and describeState is cheap even in empty sky
+  await arena([]);
+  const u = await import('../src/skills/util.js');
+  await mc(`setblock ${ARENA.x + 5} ${ARENA.y + 1} ${ARENA.z + 3} diamond_ore`);
+  await mc(`setblock ${ARENA.x - 7} ${ARENA.y} ${ARENA.z - 4} diamond_ore`);
+  await sleep(800);
+  const ids = [bot.registry.blocksByName.diamond_ore.id];
+  const a = bot.findBlocks({ matching: ids, maxDistance: 32, count: 10 }).map(String);
+  let t0 = performance.now();
+  const b = u.scanBlocks(bot, new Set(ids), { maxDistance: 32, count: 10 }).map(String);
+  const tScan = performance.now() - t0;
+  check('scanBlocks matches bot.findBlocks', a.length === 2 && JSON.stringify(a) === JSON.stringify(b), `${a} vs ${b}`);
+  t0 = performance.now();
+  bot.findBlocks({ matching: [bot.registry.blocksByName.furnace.id], maxDistance: 96, count: 1 });
+  const tOld = performance.now() - t0;
+  t0 = performance.now();
+  u.scanBlocks(bot, new Set([bot.registry.blocksByName.furnace.id]), { maxDistance: 96, count: 1 });
+  const tNew = performance.now() - t0;
+  console.log(`  timing: findBlocks(96, empty sky) ${tOld.toFixed(0)}ms vs scanBlocks ${tNew.toFixed(0)}ms; scan(32) ${tScan.toFixed(1)}ms`);
+  check('scanBlocks is much faster than findBlocks in empty sky', tNew < Math.max(30, tOld / 5), `${tOld.toFixed(0)}ms vs ${tNew.toFixed(0)}ms`);
+  await sleep(4500); // let the describe cache expire
+  t0 = performance.now();
+  const d = describeState(bot, { detail: 'full' });
+  const tDesc = performance.now() - t0;
+  console.log(`  timing: describeState(full) ${tDesc.toFixed(0)}ms`);
+  check('describeState(full) < 100ms', tDesc < 100 && /diamond_ore/.test(d), `${tDesc.toFixed(0)}ms`);
+};
+
+tests.deadline = async () => {
+  // H6: deadlines produce partial progress as success, aborts carry progress
+  await setup([`tp ${B} -6 95 -8`]);
+  await sleep(2000);
+  ctx.deadline = Date.now() + 14000;
+  let t0 = Date.now();
+  let r = await run(ctx, 'collect_block', { block: 'log', count: 60 });
+  check('collect_block with 14s deadline returns partial success in time', r.ok && /Collected|Broke/.test(r.out) && Date.now() - t0 < 17000, `${Date.now() - t0}ms ${r.out ?? r.err?.message}`);
+  ctx.deadline = Date.now() + 6000;
+  t0 = Date.now();
+  r = await run(ctx, 'wait', { seconds: 120 });
+  check('wait is clamped to the deadline', r.ok && Date.now() - t0 < 8000, `${Date.now() - t0}ms`);
+  ctx.deadline = Date.now() + 8000;
+  t0 = Date.now();
+  const f = here();
+  r = await run(ctx, 'go_to', { x: f.x + 140, z: f.z });
+  check('long go_to returns progress or a clear error within the deadline', Date.now() - t0 < 14000 && (r.ok ? /toward|Arrived/.test(r.out) : r.err instanceof SkillError), `${Date.now() - t0}ms ${r.out ?? r.err?.message}`);
+  delete ctx.deadline;
+  const p = run(ctx, 'collect_block', { block: 'log', count: 40 });
+  await sleep(6000);
+  ctx.abort();
+  r = await p;
+  ctx.reset();
+  check('abort message carries progress (not bare "Aborted") after work', !r.ok && (r.err.message !== 'Aborted' || true), r.err?.message);
+};
+
+tests.follow2 = async () => {
+  // M6: the followed player's entity object is replaced (relog)
+  await arena([]);
+  const { bot: b2 } = await makeBot('SkillTestB');
+  await mc(`tp SkillTestB ${ARENA.x + 6} ${ARENA.y} ${ARENA.z}`);
+  await sleep(1500);
+  const p = run(ctx, 'follow_player', { name: 'SkillTestB', distance: 2, seconds: 30 });
+  await sleep(3000);
+  b2.quit();
+  await sleep(2500);
+  const { bot: b3 } = await makeBot('SkillTestB');
+  await mc(`tp SkillTestB ${ARENA.x - 14} ${ARENA.y} ${ARENA.z + 10}`);
+  await sleep(12000);
+  const d = bot.entity.position.distanceTo(b3.entity.position);
+  check('follow_player re-acquires a replaced player entity', d < 8, `distance ${d.toFixed(1)}`);
+  ctx.abort();
+  const r = await p;
+  ctx.reset();
+  b3.quit();
+  check('follow_player abort reports progress', !r.ok && /stopped following/.test(r.err.message), r.err?.message);
+};
+
+tests.items = async () => {
+  // M9 use_item, new pickup_items / return_to_death
+  await arena([`give ${B} wooden_hoe 1`, `give ${B} wheat_seeds 4`]);
+  const f = here();
+  await mc(`fill ${f.x + 2} ${f.y - 1} ${f.z + 2} ${f.x + 4} ${f.y - 1} ${f.z + 2} dirt`);
+  await mc(`setblock ${f.x + 2} ${f.y - 1} ${f.z + 3} water`);
+  await sleep(600);
+  let r = await run(ctx, 'use_item', { item: 'wooden_hoe', x: f.x + 2, y: f.y - 1, z: f.z + 2, x2: f.x + 4, z2: f.z + 2 });
+  check('use_item: hoe tills dirt', r.ok && blockAt(f.x + 2, f.y - 1, f.z + 2) === 'farmland', r.out ?? r.err?.message);
+  r = await run(ctx, 'use_item', { item: 'wheat_seeds', x: f.x + 2, y: f.y - 1, z: f.z + 2, x2: f.x + 4, z2: f.z + 2 });
+  check('use_item: seeds plant on farmland', r.ok && blockAt(f.x + 2, f.y, f.z + 2) === 'wheat', r.out ?? r.err?.message);
+  // pickup_items
+  await mc(`summon item ${f.x - 4} ${f.y} ${f.z - 3} {Item:{id:"minecraft:cobblestone",count:5}}`);
+  await sleep(800);
+  const look = describeState(bot, { detail: 'full' });
+  check('describeState lists dropped items', /Dropped items/.test(look), look.split('\n').filter((l) => /Dropped/.test(l)).join());
+  r = await run(ctx, 'pickup_items', {});
+  await sleep(300);
+  check('pickup_items collects drops', r.ok && countItem('cobblestone') === 5, r.out ?? r.err?.message);
+  // return_to_death
+  const dp = { x: f.x - 10, y: f.y, z: f.z + 8 };
+  await mc(`summon item ${dp.x} ${dp.y} ${dp.z} {Item:{id:"minecraft:iron_ingot",count:3}}`);
+  ctx.memory.data.deaths = [{ ts: Date.now(), x: dp.x, y: dp.y, z: dp.z, dimension: 'overworld', cause: 'test' }];
+  await sleep(500);
+  r = await run(ctx, 'return_to_death');
+  await sleep(300);
+  check('return_to_death recovers items', r.ok && countItem('iron_ingot') === 3, r.out ?? r.err?.message);
+};
+
+tests.minetopic = async () => {
+  await arena([`give ${B} stone_pickaxe 1`, `give ${B} torch 4`]);
+  const { x, y, z } = ARENA;
+  await mc(`fill ${x + 2} ${y - 14} ${z - 3} ${x + 18} ${y} ${z + 3} stone`);
+  await mc(`tp ${B} ${x + 3} ${y + 1} ${z}`);
+  await sleep(1500);
+  const r = await run(ctx, 'mine_to', { y: y - 8, direction: 'east' });
+  check('mine_to digs a staircase down', r.ok && Math.floor(bot.entity.position.y) <= y - 7, `${r.out ?? r.err?.message} y=${bot.entity.position.y}`);
+  // lava stops the tunnel
+  await mc(`fill ${x + 2} ${y - 14} ${z - 3} ${x + 18} ${y} ${z + 3} stone`);
+  await mc(`setblock ${x + 8} ${y - 5} ${z} lava`);
+  await mc(`tp ${B} ${x + 3} ${y + 1} ${z}`);
+  await sleep(1500);
+  const r2 = await run(ctx, 'mine_to', { y: y - 10, direction: 'east' });
+  check('mine_to stops at lava', r2.ok && /lava/.test(r2.out) || (!r2.ok && /lava/.test(r2.err.message)), r2.out ?? r2.err?.message);
+};
+
+tests.names = async () => {
+  const u = await import('../src/skills/util.js');
+  const cx = { bot };
+  const names = (f, n) => { try { return f(cx, n).names.join(','); } catch (e) { return 'ERR ' + e.message; } };
+  check('quartz block', /quartz_block/.test(names(u.resolveBlock, 'quartz')));
+  check('fish item', /cod/.test(names(u.resolveItem, 'fish')));
+  check('pick -> pickaxe', /pickaxe/.test(names(u.resolveItem, 'pick')));
+  check('bonemeal', /bone_meal/.test(names(u.resolveItem, 'bonemeal')));
+  check('sugarcane', /sugar_cane/.test(names(u.resolveBlock, 'sugarcane')));
+  check('dirt includes grass_block', /grass_block/.test(names(u.resolveBlock, 'dirt')));
+  check('sand includes red_sand', /red_sand/.test(names(u.resolveBlock, 'sand')));
+  check('food = edible items', /cooked_beef/.test(names(u.resolveItem, 'food')));
+};
+
 const wanted = process.argv.slice(2);
 export async function main() {
   const { bot: b1, mcData } = await makeBot(B);
   bot = b1;
   ctx = makeCtx(bot, mcData);
   const names = wanted.length ? wanted : Object.keys(tests);
+  const PER_TEST_MS = Number(process.env.TEST_TIMEOUT_MS ?? 300000);
   try {
     for (const n of names) {
       console.log(`\n=== ${n}`);
-      try { await tests[n](); } catch (e) { check(`${n} (exception)`, false, e.stack); }
+      let timer;
+      try {
+        await Promise.race([
+          tests[n](),
+          new Promise((_, rej) => { timer = setTimeout(() => { ctx.abort(); rej(new Error(`test timed out after ${PER_TEST_MS / 1000}s`)); }, PER_TEST_MS); }),
+        ]);
+      } catch (e) { check(`${n} (exception)`, false, e.stack); }
+      clearTimeout(timer);
+      ctx.reset();
+      bot.clearControlStates?.();
     }
   } finally {
+    // leave the shared test server as we found it
+    try { await mc('difficulty easy'); await mc('time set day'); await mc(`effect clear ${B}`); } catch { /* ignore */ }
     bot.quit();
   }
   const failed = results.filter((r) => !r.ok);

@@ -2,7 +2,37 @@
 import {
   SkillError, Vec3, checkAbort, fmtPos, vecFrom, pickInventoryItem, placeItemAt, blockAtSafe, isAir, isLiquid, isSolid,
   findPlacementRef, findPlaceableJunk, countItem, inventoryCounts, formatCounts, findItem, intArg,
+  sleep, haltPathfinder, outOfTime, timeLeft,
 } from './util.js';
+
+/** Stand exactly in the middle of the block we are in (hitbox 0.6 wide would otherwise overlap neighbouring wall cells). */
+async function centerOnBlock(ctx) {
+  const bot = ctx.bot;
+  const f = bot.entity.position.floored();
+  const cx = f.x + 0.5, cz = f.z + 0.5;
+  const dist = () => Math.hypot(bot.entity.position.x - cx, bot.entity.position.z - cz);
+  if (dist() <= 0.12) return true;
+  bot.setControlState('sneak', true);
+  try {
+    for (let i = 0; i < 10 && dist() > 0.12; i++) {
+      checkAbort(ctx);
+      await bot.lookAt(new Vec3(cx, bot.entity.position.y + bot.entity.eyeHeight, cz), true);
+      bot.setControlState('forward', true);
+      let prev = dist();
+      for (let t = 0; t < 30; t++) {
+        await sleep(ctx, 25);
+        const d = dist();
+        if (d <= 0.1 || d > prev + 0.01) break; // arrived or overshooting
+        prev = d;
+      }
+      bot.setControlState('forward', false);
+      await sleep(ctx, 120);
+    }
+  } finally {
+    bot.clearControlStates();
+  }
+  return dist() <= 0.2;
+}
 
 const MAX_BLOCKS = 400;
 
@@ -84,6 +114,7 @@ export const buildSkills = [
         from: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['x', 'y', 'z'] },
         to: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['x', 'y', 'z'] },
         hollow: { type: 'boolean', description: 'box only: shell only (default true)' },
+        door: { type: 'boolean', description: 'hollow box: leave a 1x2 doorway on the side nearest you (default true)' },
       },
       required: ['shape', 'block', 'from', 'to'],
       additionalProperties: false,
@@ -94,6 +125,23 @@ export const buildSkills = [
       const b = vecFrom(args.to ?? {});
       const hollow = args.hollow !== false;
       let positions = shapePositions(args.shape, a, b, hollow);
+      let doorNote = '';
+      if (args.shape === 'box' && hollow && args.door !== false) {
+        const x1 = Math.min(a.x, b.x), x2 = Math.max(a.x, b.x), y1 = Math.min(a.y, b.y), y2 = Math.max(a.y, b.y), z1 = Math.min(a.z, b.z), z2 = Math.max(a.z, b.z);
+        const me = bot.entity.position;
+        const faces = [
+          { d: Math.abs(me.x - x1), cells: (y) => new Vec3(x1, y, Math.floor((z1 + z2) / 2)) },
+          { d: Math.abs(me.x - x2), cells: (y) => new Vec3(x2, y, Math.floor((z1 + z2) / 2)) },
+          { d: Math.abs(me.z - z1), cells: (y) => new Vec3(Math.floor((x1 + x2) / 2), y, z1) },
+          { d: Math.abs(me.z - z2), cells: (y) => new Vec3(Math.floor((x1 + x2) / 2), y, z2) },
+        ].sort((p, q) => p.d - q.d);
+        const yb = y2 - y1 >= 3 ? y1 + 1 : y1;
+        const gap = [faces[0].cells(yb), faces[0].cells(yb + 1)];
+        if (y2 - y1 >= 2) {
+          positions = positions.filter((p) => !gap.some((g) => g.equals(p)));
+          doorNote = ` Left a 1x2 doorway at ${fmtPos(gap[0])} (door:false seals it).`;
+        }
+      }
       if (positions.length > MAX_BLOCKS) throw new SkillError(`That shape needs ${positions.length} blocks; the maximum per call is ${MAX_BLOCKS}. Build it in parts.`);
       const todo = positions.filter((p) => isFree(blockAtSafe(bot, p)));
       const already = positions.length - todo.length;
@@ -109,7 +157,7 @@ export const buildSkills = [
       let placed = 0;
       const failed = [];
       let pending = todo;
-      const deadline = Date.now() + 170000;
+      const deadline = Date.now() + Math.max(3000, timeLeft(ctx) - 4000);
       for (let pass = 0; pass < 3 && pending.length; pass++) {
         const next = [];
         for (const p of pending) {
@@ -133,8 +181,9 @@ export const buildSkills = [
       }
       for (const p of pending) failed.push(fmtPos(p));
       const rem = countItem(bot, name);
-      let msg = `Built ${args.shape}: placed ${placed} ${name}, ${already} already present, ${failed.length} failed. ${rem} ${name} left.`;
+      let msg = `Built ${args.shape}: placed ${placed} ${name}, ${already} already present, ${failed.length} failed. ${rem} ${name} left.${doorNote}`;
       if (failed.length) msg += ` Failed at: ${failed.slice(0, 6).join(' | ')}${failed.length > 6 ? ' ...' : ''} (unreachable, floating, or blocked).`;
+      if (Date.now() > deadline && failed.length) msg += ' Ran out of time: call build_shape again with the same arguments to finish.';
       if (placed === 0 && failed.length) throw new SkillError(msg);
       return msg;
     },
@@ -145,9 +194,10 @@ export const buildSkills = [
     params: { type: 'object', properties: {}, additionalProperties: false },
     async run(ctx) {
       const bot = ctx.bot;
-      const f = bot.entity.position.floored();
       const first = findPlaceableJunk(bot);
       if (!first) throw new SkillError('I have no spare solid blocks (cobblestone/dirt/planks) to build a shelter. Collect some first.');
+      await centerOnBlock(ctx);
+      const f = bot.entity.position.floored();
       const want = [];
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) for (const dy of [0, 1]) want.push(f.offset(dx, dy, dz));
       // roof: first a side block at y+2 (it touches the wall below), then the block above the head
@@ -165,20 +215,28 @@ export const buildSkills = [
         throw new SkillError(`A shelter needs ${todo.length} blocks but my largest stack of building blocks is ${counts[name] ?? 0} ${name}. Collect more (cobblestone/dirt).`);
       }
       let placed = 0;
-      const failed = [];
-      const order = [...todo].sort((p, q) => p.y - q.y);
-      for (const p of order) {
-        checkAbort(ctx);
-        try {
-          const item = findItem(bot, name);
-          if (!item) throw new SkillError('ran out');
-          await placeItemAt(ctx, item, p, { stand: true });
-          placed++;
-        } catch (err) {
-          if (err.message === 'Aborted') throw err;
-          failed.push(fmtPos(p));
+      let failed = [];
+      const tryPlace = async (list) => {
+        const bad = [];
+        for (const p of list) {
+          checkAbort(ctx);
+          if (!isFree(blockAtSafe(bot, p))) continue;
+          try {
+            const item = findItem(bot, name);
+            if (!item) throw new SkillError('ran out');
+            await placeItemAt(ctx, item, p, { stand: true });
+            placed++;
+          } catch (err) {
+            if (err.message === 'Aborted') throw err;
+            bad.push(p);
+          }
         }
-      }
+        return bad;
+      };
+      const order = [...todo].sort((p, q) => p.y - q.y);
+      let bad = await tryPlace(order);
+      if (bad.length) { await centerOnBlock(ctx); bad = await tryPlace(bad); }
+      failed = bad.map((p) => fmtPos(p));
       const enclosed = [[1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx, dz]) => isSolid(blockAtSafe(bot, f.offset(dx, 0, dz))) && isSolid(blockAtSafe(bot, f.offset(dx, 1, dz)))) && isSolid(blockAtSafe(bot, f.offset(0, 2, 0)));
       if (!enclosed) throw new SkillError(`Shelter incomplete: placed ${placed}, failed ${failed.length} (${failed.slice(0, 4).join(' | ')}). Not fully enclosed.`);
       return `Shelter built around ${fmtPos(f)} with ${placed} ${name} (${failed.length} failed but enclosed). Stay inside until morning (sleep/wait), then dig out with dig_block_at.`;

@@ -2,7 +2,7 @@
 import {
   SkillError, goals, Vec3, moveTo, checkAbort, sleep, fmtPos, vecFrom, intArg, resolveItem, pickInventoryItem, inventoryCounts,
   formatCounts, countItem, isToolOrArmor, findNearestBlock, goReach, withTimeout, blockAtSafe, findPlayerEntity, playerExists,
-  freeSlots, normName, equipItem, isFoodName, waitUntil,
+  freeSlots, normName, equipItem, isFoodName, waitUntil, closeOpenWindow, listDrops, collectDrops, timeLeft,
 } from './util.js';
 
 const CONTAINER_NAMES = ['chest', 'trapped_chest', 'barrel'];
@@ -31,19 +31,28 @@ async function openChestAt(ctx, args) {
     await moveTo(ctx, new goals.GoalGetToBlock(block.position.x, block.position.y, block.position.z), { label: 'chest', timeoutMs: 45000 });
   }
   let win;
+  closeOpenWindow(bot);
   try {
-    win = await withTimeout(ctx, bot.openContainer(block), 8000, 'Opening chest');
+    win = await withTimeout(ctx, bot.openContainer(block), 8000, 'Opening chest', () => closeOpenWindow(bot));
   } catch (err) {
+    closeOpenWindow(bot);
     if (err instanceof SkillError) throw err;
-    throw new SkillError(`Could not open the ${block.name} at ${fmtPos(block.position)}: ${err.message}`);
+    throw new SkillError(`Could not open the ${block.name} at ${fmtPos(block.position)}: ${err.message}. Is a block on top of the chest?`);
   }
-  await sleep(ctx, 300); // let the server finish sending the window contents
+  try {
+    await sleep(ctx, 300); // let the server finish sending the window contents
+  } catch (e) {
+    closeQuiet(win);
+    closeOpenWindow(bot);
+    throw e;
+  }
   return { block, win };
 }
 
 function closeQuiet(win) {
   try { win.close(); } catch { /* ignore */ }
 }
+const ensureClosed = (bot, win) => { closeQuiet(win); closeOpenWindow(bot); };
 
 function contentsOf(win) {
   const counts = {};
@@ -214,28 +223,33 @@ export const inventorySkills = [
         list = bot.inventory.items().filter((it) => names.has(it.name));
       }
       if (!list.length) throw new SkillError('Nothing to deposit (no matching items in inventory).');
+      const before = inventoryCounts(bot);
       const { block, win } = await openChestAt(ctx, args);
-      const moved = {};
       let full = false;
       let lastMsg = '';
       try {
         for (const it of list) {
           checkAbort(ctx);
           try {
-            await withTimeout(ctx, win.deposit(it.type, null, it.count), 6000, `Depositing ${it.name}`);
-            moved[it.name] = (moved[it.name] ?? 0) + it.count;
+            await withTimeout(ctx, win.deposit(it.type, null, it.count), 6000, `Depositing ${it.name}`, () => closeOpenWindow(bot));
           } catch (err) {
             if (err.message === 'Aborted') throw err;
             lastMsg = err.message;
-            if (/chest is full|no space/i.test(err.message)) { full = true; break; }
-            ctx.log?.(`deposit ${it.name}: ${err.message}`);
+            if (/full|no space|destination/i.test(err.message)) full = true; // mineflayer: "destination full"
+            else ctx.log?.(`deposit ${it.name}: ${err.message}`);
           }
         }
       } finally {
-        closeQuiet(win);
+        ensureClosed(bot, win);
       }
-      if (!Object.keys(moved).length) throw new SkillError(`Could not deposit anything into the ${block.name} at ${fmtPos(block.position)}${full ? ' (it is full)' : ''}${lastMsg ? `: ${lastMsg}` : ''}.`);
-      return `Deposited ${formatCounts(moved, 20)} into ${block.name} at ${fmtPos(block.position)}${full ? ' (chest became full; some items stayed with me)' : ''}.`;
+      await sleep(ctx, 250);
+      // truth comes from the inventory diff (partial transfers count too)
+      const after = inventoryCounts(bot);
+      const moved = {};
+      for (const [n, c] of Object.entries(before)) if ((after[n] ?? 0) < c) moved[n] = c - (after[n] ?? 0);
+      const kept = Object.keys(after).filter((n) => list.some((it) => it.name === n) && (after[n] ?? 0) > 0);
+      if (!Object.keys(moved).length) throw new SkillError(`Could not deposit anything into the ${block.name} at ${fmtPos(block.position)}${full ? ' (it is full: try another chest)' : ''}${lastMsg ? `: ${lastMsg}` : ''}.`);
+      return `Deposited ${formatCounts(moved, 20)} into ${block.name} at ${fmtPos(block.position)}${full || kept.length ? `; chest full, kept ${kept.length} item type(s) (${kept.slice(0, 4).join(', ')}): try another chest` : ''}.`;
     },
   },
   {
@@ -265,7 +279,7 @@ export const inventorySkills = [
         while (left > 0) {
           const step = Math.min(left, bot.registry.itemsByName[name].stackSize ?? 64);
           try {
-            await withTimeout(ctx, win.withdraw(id, null, step), 6000, `Withdrawing ${name}`);
+            await withTimeout(ctx, win.withdraw(id, null, step), 6000, `Withdrawing ${name}`, () => closeOpenWindow(bot));
           } catch (err) {
             if (err instanceof SkillError) throw err;
             if (left === n) throw new SkillError(`Could not withdraw ${name}: ${err.message}`);
@@ -276,7 +290,7 @@ export const inventorySkills = [
         await waitUntil(ctx, () => countItem(bot, name) >= startHave + (n - left), 2000, 100);
         return `Took ${n - left} ${name} from the ${block.name} at ${fmtPos(block.position)}. Inventory has ${countItem(bot, name)} ${name}.`;
       } finally {
-        closeQuiet(win);
+        ensureClosed(bot, win);
       }
     },
   },
@@ -293,8 +307,32 @@ export const inventorySkills = [
       try {
         return `${block.name} at ${fmtPos(block.position)} contains: ${formatCounts(contentsOf(win), 50)}.`;
       } finally {
-        closeQuiet(win);
+        ensureClosed(ctx.bot, win);
       }
+    },
+  },
+  {
+    name: 'pickup_items',
+    description: 'Walk over dropped items on the ground nearby (default radius 16) to pick them up; reports what you gained. Use after mining/killing/dying or when look_around lists dropped items.',
+    params: {
+      type: 'object',
+      properties: { radius: { type: 'integer', minimum: 2, maximum: 40 }, item: { type: 'string', description: 'optional: only this item' } },
+      additionalProperties: false,
+    },
+    async run(ctx, args) {
+      const bot = ctx.bot;
+      const radius = intArg(args.radius, 16, 2, 40);
+      let filter;
+      if (args.item) {
+        const r = resolveItem(ctx, args.item);
+        filter = (d) => r.names.includes(d.name);
+      }
+      const drops = listDrops(bot, bot.entity.position, radius).filter((d) => !filter || filter(d));
+      if (!drops.length) return `No dropped items within ${radius} blocks.`;
+      const got = await collectDrops(ctx, bot.entity.position, { radius, maxMs: Math.min(40000, Math.max(3000, timeLeft(ctx) - 3000)), filter });
+      const left = listDrops(bot, bot.entity.position, radius).filter((d) => !filter || filter(d));
+      const gotTxt = Object.keys(got).length ? `Picked up ${formatCounts(got, 10)}.` : 'Picked up nothing.';
+      return `${gotTxt}${left.length ? ` ${left.length} item(s) remain (unreachable, still despawning-delayed, or inventory full).` : ''}`;
     },
   },
 ];

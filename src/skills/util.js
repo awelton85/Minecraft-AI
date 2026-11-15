@@ -847,7 +847,7 @@ export function listDrops(bot, pos = bot.entity.position, radius = 16) {
 export async function collectDrops(ctx, pos, { radius = 6, maxMs = 6000, filter } = {}) {
   const bot = ctx.bot;
   const before = inventoryCounts(bot);
-  const end = Date.now() + Math.min(maxMs, Math.max(500, timeLeft(ctx) - 1500));
+  const end = Date.now() + Math.min(maxMs, Math.max(2500, timeLeft(ctx) - 500)); // the Agent deadline already leaves ~10s of slack
   let guard = 0;
   const skipped = new Set();
   while (Date.now() < end && guard++ < 12) {
@@ -883,21 +883,14 @@ function stateMap(registry) {
   return m;
 }
 
-/**
- * Find blocks whose block id is in `ids` (Set<number>) around `point`. Much faster than bot.findBlocks on 1.21.5+/26.x,
- * where uniform (all-air / all-stone) chunk sections are SingleValueContainers without a palette and findBlocks
- * brute-forces all 4096 blocks of every one. Returns Vec3[] sorted by distance, at most `count`.
- */
-export function scanBlocks(bot, ids, { point, maxDistance = 32, count = 64, filter } = {}) {
+function scanCore(bot, idSet, { point, maxDistance }, onHit) {
   const p = (point ?? bot.entity.position).floored();
   const map = stateMap(bot.registry);
   const minY = bot.game?.minY ?? -64;
   const nSections = (bot.game?.height ?? 384) >> 4;
   const r = Math.ceil(maxDistance);
-  const out = [];
   const x0 = (p.x - r) >> 4, x1 = (p.x + r) >> 4, z0 = (p.z - r) >> 4, z1 = (p.z + r) >> 4;
   const s0 = Math.max(0, (p.y - r - minY) >> 4), s1 = Math.min(nSections - 1, (p.y + r - minY) >> 4);
-  const idSet = ids instanceof Set ? ids : new Set(ids);
   const maxSq = maxDistance * maxDistance;
   for (let cx = x0; cx <= x1; cx++) {
     for (let cz = z0; cz <= z1; cz++) {
@@ -909,7 +902,7 @@ export function scanBlocks(bot, ids, { point, maxDistance = 32, count = 64, filt
         const data = sec.data;
         let states = null;
         if (data.palette) states = data.palette;
-        else if (data.value !== undefined) states = [data.value];
+        else if (data.value !== undefined) states = [data.value]; // uniform section: skip unless it is the wanted block
         if (states) {
           let any = false;
           for (const sid of states) if (idSet.has(map[sid])) { any = true; break; }
@@ -923,21 +916,90 @@ export function scanBlocks(bot, ids, { point, maxDistance = 32, count = 64, filt
           for (let z = 0; z < 16; z++) {
             const dz = baseZ + z - p.z;
             for (let x = 0; x < 16; x++) {
-              const sid = data.get((y << 8) | (z << 4) | x);
-              if (!idSet.has(map[sid])) continue;
+              const bid = map[data.get((y << 8) | (z << 4) | x)];
+              if (!idSet.has(bid)) continue;
               const dx = baseX + x - p.x;
-              if (dx * dx + dy * dy + dz * dz > maxSq) continue;
-              const v = new Vec3(baseX + x, wy, baseZ + z);
-              if (filter && !filter(v)) continue;
-              out.push(v);
+              const d2 = dx * dx + dy * dy + dz * dz;
+              if (d2 > maxSq) continue;
+              onHit(baseX + x, wy, baseZ + z, bid, d2);
             }
           }
         }
       }
     }
   }
+  return p;
+}
+
+/**
+ * Find blocks whose block id is in `ids` (Set<number>) around `point`. Much faster than bot.findBlocks on 1.21.5+/26.x,
+ * where uniform (all-air / all-stone) chunk sections are SingleValueContainers without a palette and findBlocks
+ * brute-forces all 4096 blocks of every one. Returns Vec3[] sorted by distance, at most `count`.
+ */
+export function scanBlocks(bot, ids, { point, maxDistance = 32, count = 64, filter } = {}) {
+  const idSet = ids instanceof Set ? ids : new Set(ids);
+  const out = [];
+  const p = scanCore(bot, idSet, { point, maxDistance }, (x, y, z) => {
+    const v = new Vec3(x, y, z);
+    if (!filter || filter(v)) out.push(v);
+  });
   out.sort((a, b) => a.distanceSquared(p) - b.distanceSquared(p));
   return out.length > count ? out.slice(0, count) : out;
+}
+
+/**
+ * One pass over the world for several block groups. groupOf: Map<blockId, groupName>.
+ * Returns { group: [{pos: Vec3, id, d}] } with the `perGroup` nearest hits of each group.
+ */
+export function scanGroups(bot, groupOf, { point, maxDistance = 24, perGroup = 3 } = {}) {
+  const res = {};
+  const idSet = new Set(groupOf.keys());
+  scanCore(bot, idSet, { point, maxDistance }, (x, y, z, bid, d2) => {
+    const g = groupOf.get(bid);
+    const arr = (res[g] ??= []);
+    if (arr.length >= perGroup && d2 >= arr[arr.length - 1].d2) return;
+    arr.push({ x, y, z, id: bid, d2 });
+    arr.sort((a, b) => a.d2 - b.d2);
+    if (arr.length > perGroup) arr.pop();
+  });
+  for (const g of Object.keys(res)) res[g] = res[g].map((h) => ({ pos: new Vec3(h.x, h.y, h.z), id: h.id, d: Math.sqrt(h.d2) }));
+  return res;
+}
+
+/**
+ * Highest non-air block of every column within `radius` of the bot (cheap: skips uniform air sections).
+ * Returns Vec3[] of the cell ABOVE the top block, nearest first.
+ */
+export function surfaceCells(bot, { point, radius = 32, max = 80 } = {}) {
+  const p = (point ?? bot.entity.position).floored();
+  const map = stateMap(bot.registry);
+  const air = new Set(['air', 'cave_air', 'void_air'].map((n) => bot.registry.blocksByName[n]?.id).filter((x) => x !== undefined));
+  const minY = bot.game?.minY ?? -64;
+  const nSections = (bot.game?.height ?? 384) >> 4;
+  const out = [];
+  for (let x = p.x - radius; x <= p.x + radius; x += 1) {
+    for (let z = p.z - radius; z <= p.z + radius; z += 1) {
+      if ((x - p.x) ** 2 + (z - p.z) ** 2 > radius * radius) continue;
+      const col = bot.world.getColumn(x >> 4, z >> 4);
+      if (!col) continue;
+      let found = false;
+      for (let si = nSections - 1; si >= 0 && !found; si--) {
+        const sec = col.sections[si];
+        if (!sec?.data) continue;
+        if (sec.data.value !== undefined && !sec.data.palette && air.has(map[sec.data.value])) continue;
+        for (let y = 15; y >= 0; y--) {
+          const bid = map[sec.data.get((y << 8) | ((z & 15) << 4) | (x & 15))];
+          if (!air.has(bid)) {
+            out.push({ v: new Vec3(x, si * 16 + minY + y + 1, z), d: (x - p.x) ** 2 + (z - p.z) ** 2 });
+            found = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  out.sort((a, b) => a.d - b.d);
+  return out.slice(0, max).map((o) => o.v);
 }
 
 /** Goal to get within reach of a block. Non-solid blocks (crops, flowers, cane) cannot be ray-cast, so use a distance goal. */
