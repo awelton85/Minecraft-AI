@@ -1,13 +1,16 @@
-import { makeBot, describeState, mc } from './test/skills.smoke.mjs';
-const { bot } = await makeBot('SkillTestP');
-console.log('version', bot.version);
-console.log(describeState(bot,{detail:'brief'}));
-console.log(describeState(bot,{detail:'full'}));
-const rs = bot.recipesAll(bot.registry.itemsByName.wooden_pickaxe.id, null, true);
-console.log(rs.length, JSON.stringify(rs[0]), JSON.stringify(rs[1]));
-const st = bot.recipesAll(bot.registry.itemsByName.stick.id, null, false);
-console.log(st.length, JSON.stringify(st[0]));
-const bp = bot.recipesAll(bot.registry.itemsByName.oak_planks.id, null, false);
-console.log(bp.length, JSON.stringify(bp[0]));
-console.log(bot.blockAt(bot.entity.position.floored()).getProperties?.());
+import { makeBot, makeCtx, run, mc, sleep } from './test/skills.smoke.mjs';
+const { bot, mcData } = await makeBot('SkillTestP');
+const ctx = makeCtx(bot, mcData);
+await mc('clear SkillTestP'); await mc('give SkillTestP oak_log 8'); await sleep(1000);
+await run(ctx, 'craft_item', { item: 'planks', count: 8 });
+await run(ctx, 'craft_item', { item: 'stick', count: 4 });
+await run(ctx, 'craft_item', { item: 'crafting_table' });
+await sleep(1000);
+const dump = (t) => console.log(t, bot.inventory.slots.map((s,i)=>s?`${i}:${s.name}x${s.count}`:null).filter(Boolean).join(' '), 'cursor', bot.inventory.selectedItem?.name);
+dump('pre');
+const ow=bot._client.write.bind(bot._client); bot._client.write=(n,p)=>{ ow(n,p); if(n==='window_click') console.log('CLICK', p.windowId, 'slot',p.slot,'btn',p.mouseButton,'mode',p.mode,'carried',p.cursorItem?.itemCount, p.cursorItem?.itemId); };
+bot._client.on('set_slot', p => console.log('set_slot', p.windowId, p.slot, p.item.itemCount, p.item.itemId));
+bot._client.on('close_window', p => console.log('close_window', p));
+await run(ctx, 'craft_item', { item: 'wooden_pickaxe' });
+await sleep(1000); dump('post');
 bot.quit(); process.exit(0)

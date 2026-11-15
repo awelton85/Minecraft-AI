@@ -109,3 +109,77 @@ export function check(name, cond, info = '') {
 
 export { skills, getSkill, describeState, SkillError, pf };
 export { results };
+
+
+// =============================================================== scenarios
+const tests = {};
+const B = 'SkillTest1';
+let ctx, bot;
+
+async function setup(extra = []) {
+  await mc(`op ${B}`);
+  await mc(`gamemode survival ${B}`);
+  await mc(`clear ${B}`);
+  for (const c of extra) await mc(c);
+  await sleep(500);
+}
+
+tests.observe = async () => {
+  const brief = describeState(bot, { detail: 'brief' });
+  const full = describeState(bot, { detail: 'full' });
+  console.log(brief + '\n---\n' + full);
+  check('describeState brief < 900', brief.length > 50 && brief.length < 900, `${brief.length} chars`);
+  check('describeState full < 2500', full.length > brief.length - 1 && full.length < 2500, `${full.length} chars`);
+  check('describeState never throws', typeof describeState({}, {}) === 'string');
+};
+
+tests.gather = async () => {
+  await setup();
+  let r = await run(ctx, 'collect_block', { block: 'log', count: 3 });
+  check('collect_block log x3', r.ok && /Collected 3/.test(r.out));
+  r = await run(ctx, 'find_blocks', { block: 'oak log', count: 3 });
+  check('find_blocks', r.ok);
+  r = await run(ctx, 'collect_block', { block: 'unobtainium' });
+  check('collect_block unknown name gives close matches', !r.ok && r.err instanceof SkillError);
+  r = await run(ctx, 'collect_block', { block: 'stone', count: 1 });
+  check('collect stone without pickaxe fails with tool hint', !r.ok && /pickaxe/.test(r.err.message), r.err?.message);
+};
+
+tests.craft = async () => {
+  await setup([`give ${B} oak_log 8`]);
+  let r = await run(ctx, 'get_recipe', { item: 'wooden_pickaxe' });
+  check('get_recipe', r.ok);
+  r = await run(ctx, 'craft_item', { item: 'planks', count: 8 });
+  check('craft planks', r.ok && /Crafted 8/.test(r.out));
+  r = await run(ctx, 'craft_item', { item: 'stick', count: 4 });
+  check('craft sticks', r.ok);
+  r = await run(ctx, 'craft_item', { item: 'crafting_table' });
+  check('craft crafting_table', r.ok);
+  r = await run(ctx, 'craft_item', { item: 'wooden_pickaxe' });
+  check('craft wooden_pickaxe (places table)', r.ok, r.out);
+  r = await run(ctx, 'craft_item', { item: 'iron_pickaxe' });
+  check('craft iron_pickaxe fails listing missing', !r.ok && /missing/.test(r.err.message) && /iron_ingot/.test(r.err.message), r.err?.message);
+  await setup([`give ${B} oak_log 3`]);
+  r = await run(ctx, 'craft_item', { item: 'wooden_pickaxe' });
+  check('craft wooden_pickaxe from raw logs only (table+planks+sticks)', r.ok, r.out);
+};
+
+const wanted = process.argv.slice(2);
+export async function main() {
+  const { bot: b1, mcData } = await makeBot(B);
+  bot = b1;
+  ctx = makeCtx(bot, mcData);
+  const names = wanted.length ? wanted : Object.keys(tests);
+  try {
+    for (const n of names) {
+      console.log(`\n=== ${n}`);
+      try { await tests[n](); } catch (e) { check(`${n} (exception)`, false, e.stack); }
+    }
+  } finally {
+    bot.quit();
+  }
+  const failed = results.filter((r) => !r.ok);
+  console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
+  process.exit(failed.length ? 1 : 0);
+}
+if (import.meta.url === `file://${process.argv[1]}`) main();

@@ -210,6 +210,7 @@ function nameCandidates(norm) {
   if (norm.endsWith('ies')) out.push(norm.slice(0, -3) + 'y');
   if (norm.endsWith('es')) out.push(norm.slice(0, -2));
   if (norm.endsWith('s')) out.push(norm.slice(0, -1));
+  else out.push(norm + 's');
   // "oak wood" / "oak_wood" -> the user almost always means the log
   if (/_wood$/.test(norm)) out.push(norm.replace(/_wood$/, '_log'));
   return [...new Set(out)];
@@ -249,7 +250,10 @@ export function resolveBlock(ctx, raw) {
   const norm = normName(raw);
   let r;
   try {
-    r = resolveFrom(ctx, raw, reg.blocksByName, 'block');
+    const stem = norm.replace(/^raw_/, '').replace(/s$/, '');
+    if (!reg.blocksByName[norm] && reg.blocksByName[`${stem}_ore`]) {
+      r = { names: [`${stem}_ore`], generic: false, query: norm };
+    } else r = resolveFrom(ctx, raw, reg.blocksByName, 'block');
   } catch (err) {
     // maybe an item that is dropped by some block (coal, diamond, raw_iron, redstone, ...)
     const items = reg.itemsByName;
@@ -266,7 +270,9 @@ export function resolveBlock(ctx, raw) {
     const d = 'deepslate_' + r.names[0];
     if (reg.blocksByName[d]) r.names.push(d);
   }
-  // exact name that is not a block but resolved fine as block? (handled above)
+  // natural stone is mined as "stone" but drops cobblestone; people ask for the drop
+  if (!r.generic && r.names[0] === 'cobblestone') r.names.push('stone');
+  if (!r.generic && r.names[0] === 'cobbled_deepslate') r.names.push('deepslate');
   return r;
 }
 
@@ -367,15 +373,23 @@ export async function digBlock(ctx, block, { timeoutMs } = {}) {
 const FACES = [new Vec3(0, -1, 0), new Vec3(0, 1, 0), new Vec3(-1, 0, 0), new Vec3(1, 0, 0), new Vec3(0, 0, -1), new Vec3(0, 0, 1)];
 export { FACES };
 
+// right-clicking these opens a GUI / toggles them instead of placing a block against them
+const INTERACTIVE_RE = /(crafting_table|chest|barrel|furnace|smoker|anvil|enchanting_table|_bed$|door|trapdoor|button|lever|fence_gate|shulker_box|hopper|dispenser|dropper|loom|cartography_table|grindstone|smithing_table|stonecutter|note_block|jukebox|beacon|brewing_stand|cauldron|lectern|bell|_sign$|composter|repeater|comparator|daylight_detector|respawn_anchor|decorated_pot|crafter)/;
+export const isInteractive = (b) => !!b && INTERACTIVE_RE.test(b.name);
+
 /** Find a solid neighbour of `pos` to place against. Returns { ref, face } or null. Prefers the block below. */
 export function findPlacementRef(bot, pos, avoid = []) {
+  let fallback = null;
   for (const d of FACES) {
     const n = pos.plus(d);
     if (avoid.some((a) => a.equals(n))) continue;
     const b = blockAtSafe(bot, n);
-    if (isSolid(b) && !isLiquid(b)) return { ref: b, face: d.scaled(-1) };
+    if (isSolid(b) && !isLiquid(b)) {
+      if (isInteractive(b)) { fallback ??= { ref: b, face: d.scaled(-1), sneak: true }; continue; }
+      return { ref: b, face: d.scaled(-1) };
+    }
   }
-  return null;
+  return fallback;
 }
 
 function bodyOverlaps(bot, pos) {
@@ -414,11 +428,14 @@ export async function placeItemAt(ctx, item, pos, { stand = false } = {}) {
   }
   await equipItem(ctx, item);
   try {
+    if (target.sneak) bot.setControlState('sneak', true); // placing against a GUI block needs sneaking
     await withTimeout(ctx, bot.lookAt(center, true), 2000, 'Looking at target');
     await withTimeout(ctx, bot.placeBlock(target.ref, target.face), 7000, 'Placing block');
   } catch (err) {
     if (err instanceof SkillError) throw err;
     throw new SkillError(`Failed to place ${item.name} at ${fmtPos(pos)}: ${err.message}`);
+  } finally {
+    if (target.sneak) bot.setControlState('sneak', false);
   }
   return true;
 }
