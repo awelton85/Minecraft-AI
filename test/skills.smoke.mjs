@@ -541,7 +541,8 @@ tests.craftmix = async () => {
   await arena([`give ${B} oak_log 1`]);
   r = await run(ctx, 'craft_item', { item: 'campfire' });
   check('missing list is collapsed, no exotic wood names', !r.ok && !/hyphae|stripped/.test(r.err.message), r.err?.message);
-  // table we placed ourselves is picked up again
+  // table we placed ourselves is picked up again (unless near a saved place, so start with none)
+  ctx.memory.data.places = {};
   await arena([`give ${B} oak_planks 12`, `give ${B} stick 4`, `give ${B} crafting_table 1`]);
   r = await run(ctx, 'craft_item', { item: 'wooden_pickaxe' });
   await sleep(500);
@@ -579,15 +580,17 @@ tests.combat2 = async () => {
   check('attack reports picked up drops', r.ok && /Picked up|No drops/.test(r.out), r.out);
   await mc('kill @e[type=zombie]');
   // M7: neutral mobs are not auto-targets
-  await mc(`summon enderman ${f.x + 6} ${f.y} ${f.z}`);
+  // A zombified piglin: neutral, and unlike an enderman it doesn't teleport away (which made this flaky).
+  const g = here();
+  await mc(`summon zombified_piglin ${g.x + 5} ${g.y} ${g.z} {NoAI:1b}`);
   await sleep(1200);
   r = await run(ctx, 'attack', { target: 'hostile' });
-  check('attack "hostile" ignores neutral enderman and lists mobs', !r.ok && /enderman/.test(r.err.message), r.err?.message);
+  check('attack "hostile" ignores neutral mob and lists mobs', !r.ok && /zombified_piglin/.test(r.err.message), r.err?.message);
   r = await run(ctx, 'flee');
-  check('flee ignores neutral enderman', r.ok && /No hostile/.test(r.out), r.out ?? r.err?.message);
+  check('flee ignores neutral mob', r.ok && /No hostile/.test(r.out), r.out ?? r.err?.message);
   const ds = describeState(bot, { detail: 'brief' });
   check('describeState labels neutral mobs', /[Nn]eutral/.test(ds) && !/HOSTILES/.test(ds), ds);
-  await mc('kill @e[type=enderman]');
+  await mc('kill @e[type=zombified_piglin]');
   // M8: players / owners / protected mobs
   const { bot: b2 } = await makeBot('SkillTestB');
   await sleep(1500);
