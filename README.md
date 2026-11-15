@@ -16,7 +16,7 @@ AI-controlled players for Minecraft Java Edition. Each bot is a real player on y
 - **Survival reflexes**: auto-eat, auto-equip armour, fights back when attacked, auto-respawn. Deaths are remembered.
 - **Persistent memory per character**: facts, named places, summaries of past sessions and death history. It's stored as JSON in `data/memory/` and can be edited from the dashboard.
 - **Multiple bots at once**: each has its own personality, voice, model and memory. They know about each other, and bot-to-bot chat is rate-limited so they can't loop forever.
-- **About 40 skills**: mining, crafting (auto-crafts planks and sticks), smelting, building shapes and shelters, farming, chests, combat and fleeing, following, exploring, sleeping, and saved places.
+- **About 40 skills**: mining, crafting (auto-crafts planks and sticks), smelting, building shapes and shelters, farming (tilling and planting), chests, item pickup, combat and fleeing, following, exploring, sleeping, returning to where you died, and saved places. Player builds, chests and beds are protected from digging.
 
 ## How it fits together
 
