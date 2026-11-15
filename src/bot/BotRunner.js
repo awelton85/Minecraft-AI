@@ -7,6 +7,7 @@ import { loader as autoEat } from 'mineflayer-auto-eat';
 import armorManager from 'mineflayer-armor-manager';
 import minecraftData from 'minecraft-data';
 import { Agent } from '../agent/Agent.js';
+import { applyPhysicsFix } from '../skills/util.js';
 
 const { pathfinder, Movements } = pathfinderPkg;
 
@@ -192,6 +193,7 @@ export class BotRunner {
     this.setState('connected');
     this.log.info(`Spawned in world (Minecraft ${bot.version}) at ${fmtPos(bot.entity.position)}`);
 
+    applyPhysicsFix(bot); // client/server hitbox width mismatch -> rubber-banding against walls
     const moves = new Movements(bot);
     moves.allowParkour = true;
     moves.allowSprinting = true;
