@@ -120,6 +120,13 @@ export class SettingsManager extends EventEmitter {
     if (!validCharacterName(merged.username)) {
       throw new Error('Minecraft username must be 3-16 characters: letters, digits or underscore');
     }
+    // Two bots with one username would keep kicking each other off the server.
+    const u = merged.username.toLowerCase();
+    const dupe = Object.values(this.characters).find((c) => c.name !== merged.name && String(c.username || c.name).toLowerCase() === u);
+    if (dupe) throw new Error(`Username ${merged.username} is already used by character ${dupe.name}`);
+    if ((this.settings.owners || []).some((o) => String(o).toLowerCase() === u)) {
+      throw new Error(`${merged.username} is an owner's name; a bot can't log in with it`);
+    }
     this.characters[merged.name] = merged;
     await writeJsonAtomic(path.join(this.charDir, `${merged.name}.json`), merged);
     const list = this.settings.characters || [];

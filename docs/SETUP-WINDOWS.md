@@ -95,11 +95,11 @@ Talk to the bot in chat: `Steve_AI follow me`, `Steve_AI get 10 oak logs and mak
    - If LM Studio runs on a *different* PC from the bots, enable **Serve on Local Network** and use that PC's IP in the dashboard, e.g. `http://192.168.1.30:1234/v1`.
 4. On the dashboard, open **Settings → LLM provider → LM Studio**, click **Refresh models**, pick the model (leave it blank to use whatever is loaded), then **Test connection** and **Save**.
 5. Set **Tool mode** to *auto*. If the model often "talks about" actions instead of doing them, set it to *json*.
-6. Set *Context tokens* to match what you loaded the model with.
+6. Set *Context tokens* to match what you loaded the model with. **16k is the practical minimum**: the bot's tool list and instructions alone take about 6k tokens. With less, the bot stops and the dashboard says the context is too small.
 
 **Fallback provider**: choose LM Studio as the fallback while using Claude (or the other way around). The bots then switch over automatically if the primary provider keeps failing, for example when the internet is down. They retry the primary every 10 minutes.
 
-Any other OpenAI-compatible server (llama.cpp server, vLLM, Ollama's `/v1` endpoint, …) also works through the LM Studio provider: set its URL in the same field.
+Any other OpenAI-compatible server (llama.cpp server, vLLM, Ollama's `/v1` endpoint, …) also works through the LM Studio provider: set its URL in the same field. If that server needs an API key, put it in the `LMSTUDIO_API_KEY` environment variable or in `config/secrets.json` as `{"lmstudioApiKey": "..."}`.
 
 ## 8. Voice
 

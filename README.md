@@ -13,7 +13,7 @@ AI-controlled players for Minecraft Java Edition. Each bot is a real player on y
   - Every action has a timeout, and movement has a stuck detector that tries to get unstuck before giving up.
   - Failed actions are tracked. The model is told to change approach after repeated failures, and a bot that is truly stuck asks you for help instead of burning tokens.
   - LLM errors are retried with back-off. One crashing bot never takes down the others.
-- **Survival reflexes**: auto-eat, auto-equip armour, fights back when attacked, auto-respawn. Deaths are remembered.
+- **Survival reflexes**: auto-eat, auto-equip armour, fights back when attacked while idle (and interrupts waiting, following or exploring to react), warns the model when health gets low from any cause, auto-respawn. Deaths are remembered.
 - **Persistent memory per character**: facts, named places, summaries of past sessions and death history. It's stored as JSON in `data/memory/` and can be edited from the dashboard.
 - **Multiple bots at once**: each has its own personality, voice, model and memory. They know about each other, and bot-to-bot chat is rate-limited so they can't loop forever.
 - **About 40 skills**: mining, crafting (auto-crafts planks and sticks), smelting, building shapes and shelters, farming (tilling and planting), chests, item pickup, combat and fleeing, following, exploring, sleeping, returning to where you died, and saved places. Player builds, chests and beds are protected from digging.

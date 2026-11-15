@@ -92,6 +92,20 @@ test('MemoryStore persists facts and places', async () => {
   assert.equal(m2.data.facts.length, 0);
 });
 
+test('MemoryStore.removeFact never mass-deletes', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mem-'));
+  const m = await new MemoryStore('Bob', dir).load();
+  m.addFact('likes oak'); m.addFact('base near oak forest'); const id = m.addFact('likes banana bread');
+  assert.equal(m.removeFact(''), false);
+  assert.equal(m.removeFact('oak'), false); // ambiguous: matches two facts
+  assert.equal(m.data.facts.length, 3);
+  assert.equal(m.removeFact('banana'), true); // unique substring
+  assert.equal(m.removeFact(String(id)), false); // already gone
+  assert.equal(m.removeFact('LIKES OAK'), true); // exact text, any case
+  assert.throws(() => m.deleteEntry('facts', 'abc'));
+  assert.equal(m.data.facts.length, 1);
+});
+
 test('deepMerge replaces arrays and merges objects', () => {
   assert.deepEqual(deepMerge({ a: { b: 1, c: 2 }, l: [1] }, { a: { c: 3 }, l: [2] }), { a: { b: 1, c: 3 }, l: [2] });
 });
@@ -108,6 +122,7 @@ test('SettingsManager first run, save and characters', async () => {
   assert.equal(sm2.settings.server.port, 2);
   assert.deepEqual(sm2.settings.characters, ['Alpha_1', 'Beta_2']);
   await assert.rejects(sm2.saveCharacter({ name: '../evil' }));
+  await assert.rejects(sm2.saveCharacter({ name: 'Gamma_3', username: 'alpha_1' }), /already used/);
   await sm2.setSecret('anthropicApiKey', 'k');
   assert.deepEqual(sm2.secretsStatus(), { anthropicApiKey: true, lmstudioApiKey: false });
 });

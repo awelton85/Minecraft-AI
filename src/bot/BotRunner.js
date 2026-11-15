@@ -7,7 +7,7 @@ import { loader as autoEat } from 'mineflayer-auto-eat';
 import armorManager from 'mineflayer-armor-manager';
 import minecraftData from 'minecraft-data';
 import { Agent } from '../agent/Agent.js';
-import { applyPhysicsFix } from '../skills/util.js';
+import { applyPhysicsFix, getMovements } from '../skills/util.js';
 
 const { pathfinder, Movements } = pathfinderPkg;
 
@@ -93,10 +93,15 @@ export class BotRunner {
         version: !s.version || s.version === 'auto' ? false : s.version,
         hideErrors: true,
         checkTimeoutInterval: 60_000,
-        respawn: this.settings.reflexes?.autoRespawn !== false,
+        respawn: true, // a dead bot that never respawns can't do anything (and can't even reconnect)
       });
     } catch (e) {
-      this.onDisconnected(`createBot failed: ${e.message}`);
+      // e.g. "unsupported protocol version" for a bad Game version setting.
+      this.lastError = `Cannot start the connection: ${e.message}. Check Settings -> Server connection (leave Game version on "auto").`;
+      this.log.error(this.lastError);
+      this._kickReason = e.message; // unsupported/version -> slow retry
+      this.bot = null;
+      this.onDisconnected(null, e.message);
       return;
     }
     this.bot = bot;
@@ -194,13 +199,9 @@ export class BotRunner {
     this.log.info(`Spawned in world (Minecraft ${bot.version}) at ${fmtPos(bot.entity.position)}`);
 
     applyPhysicsFix(bot); // client/server hitbox width mismatch -> rubber-banding against walls
-    const moves = new Movements(bot);
-    moves.allowParkour = true;
-    moves.allowSprinting = true;
-    moves.canDig = true;
-    // Don't use valuable blocks for scaffolding.
-    const scaffold = ['dirt', 'cobblestone', 'netherrack', 'cobbled_deepslate', 'andesite', 'diorite', 'granite', 'tuff'];
-    moves.scafoldingBlocks = scaffold.map((n) => this.mcData.itemsByName[n]?.id).filter((id) => id !== undefined);
+    // Same Movements the skills use: protected blocks (player builds, containers, beds...) are never
+    // dug, and only cheap junk is used for scaffolding - including during reflex fights.
+    const moves = getMovements({ bot, settings: this.settings });
     bot.pathfinder.setMovements(moves);
     if (bot.pvp) bot.pvp.movements = moves; // otherwise pvp swaps in its own default Movements
     bot.pathfinder.thinkTimeout = 10_000;
@@ -258,23 +259,33 @@ export class BotRunner {
       const now = Date.now();
       if (now - lastDefense < 4000) return;
       lastDefense = now;
-      if (!attacker) return;
       if (bot.health <= 6) {
-        this.agent.notify(`DANGER: health ${Math.round(bot.health)}/20 and a ${attacker.name} is attacking you. Flee or heal now!`, { abortAny: true });
+        // Whatever the cause (mob, arrow, lava, drowning, fall, hunger): stop and deal with it.
+        const cause = attacker ? `a ${attacker.name} is attacking you` : `you are taking damage (${describeHazard(bot)})`;
+        this.agent.notify(`DANGER: health ${Math.round(bot.health)}/20 and ${cause}. Get safe or heal now!`, { abortAny: true });
         return;
       }
+      if (!attacker) return;
       if (r.selfDefense !== false && !this.agent.currentAction && bot.pvp && !bot.pvp.target) {
         this.log.info(`Defending against ${attacker.name}`);
         bot.pvp.attack(attacker);
         // Reflex fights are short; the agent decides about anything longer.
-        setTimeout(() => { if (bot.pvp?.target === attacker) bot.pvp.stop(); }, 15_000);
+        clearTimeout(this._reflexTimer);
+        this._reflexTimer = setTimeout(() => { if (bot.pvp?.target === attacker) bot.pvp.stop(); }, 15_000);
       }
       // Tell the agent at most every 20 s, so a long fight doesn't trigger an LLM call every hit.
+      // `urgent` interrupts waiting/following/exploring so the bot can react.
       if (now - (this._lastAttackNotice || 0) > 20_000) {
         this._lastAttackNotice = now;
-        this.agent.notify(`You are being attacked by a ${attacker.name} (health ${Math.round(bot.health)}/20).`);
+        this.agent.notify(`You are being attacked by a ${attacker.name} (health ${Math.round(bot.health)}/20).`, { urgent: true });
       }
     });
+  }
+
+  /** A skill is taking over: the reflex fight's auto-stop timer must not cut its fight short. */
+  cancelReflexFight() {
+    clearTimeout(this._reflexTimer);
+    this._reflexTimer = null;
   }
 
   setupChat(bot) {
@@ -373,6 +384,17 @@ function nearestHostile(bot, maxDist) {
     if (d < bestD) { best = e; bestD = d; }
   }
   return best;
+}
+
+function describeHazard(bot) {
+  try {
+    const e = bot.entity;
+    if (e.isInLava) return 'in lava';
+    if (bot.oxygenLevel !== undefined && bot.oxygenLevel <= 0) return 'drowning';
+    if (bot.food === 0) return 'starving';
+    if (e.onFire || (e.metadata?.[0] & 0x01)) return 'on fire';
+    return 'unknown cause - maybe an arrow or a fall';
+  } catch { return 'unknown cause'; }
 }
 
 function dimName(bot) {

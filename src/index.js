@@ -8,6 +8,9 @@ import { log } from './log.js';
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function main() {
+  // A bug in one bot must never take the whole program down (installed before anything starts).
+  process.on('uncaughtException', (e) => log.error('Uncaught exception:', e));
+  process.on('unhandledRejection', (e) => log.error('Unhandled rejection:', e));
   log.enableFile(path.join(rootDir, 'logs'));
   const settingsManager = await new SettingsManager(rootDir).load();
   const manager = new BotManager({ settingsManager, log, rootDir });
@@ -50,9 +53,6 @@ async function main() {
   // Closing the console window on Windows sends SIGHUP; Ctrl+Break sends SIGBREAK.
   process.on('SIGHUP', () => shutdown('SIGHUP'));
   if (process.platform === 'win32') process.on('SIGBREAK', () => shutdown('SIGBREAK'));
-  // A bug in one bot must never take the whole program down.
-  process.on('uncaughtException', (e) => log.error('Uncaught exception:', e));
-  process.on('unhandledRejection', (e) => log.error('Unhandled rejection:', e));
 }
 
 main().catch((e) => {

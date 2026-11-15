@@ -39,8 +39,7 @@
   "reflexes": {
     "autoEat": true,
     "autoArmor": true,
-    "selfDefense": true,
-    "autoRespawn": true
+    "selfDefense": true
   },
   "reconnect": {
     "enabled": true,

@@ -524,7 +524,7 @@ const FIELDS = [
   ] },
   { title: 'Reflexes', fields: [
     { p: 'reflexes.autoEat', l: 'Auto eat', t: 'bool' }, { p: 'reflexes.autoArmor', l: 'Auto armor', t: 'bool' },
-    { p: 'reflexes.selfDefense', l: 'Self defense', t: 'bool' }, { p: 'reflexes.autoRespawn', l: 'Auto respawn', t: 'bool' },
+    { p: 'reflexes.selfDefense', l: 'Self defense', t: 'bool' },
   ] },
   { title: 'Reconnect', fields: [
     { p: 'reconnect.enabled', l: 'Auto reconnect', t: 'bool' },
@@ -547,7 +547,7 @@ let form = null, original = null, settingsDirty = false, lmModels = [];
 const inputs = new Map();
 
 function markDirty() { settingsDirty = true; $('#saveMsg').textContent = 'Unsaved changes'; }
-const MINS = { 'agent.idleThinkSeconds': [5], 'agent.maxStepsPerTurn': [1, 50], 'agent.actionTimeoutSeconds': [10], 'agent.historyCompactAt': [10], 'agent.stuckSeconds': [3], 'reconnect.initialDelaySeconds': [1], 'reconnect.maxDelaySeconds': [1], 'server.port': [1, 65535], 'web.port': [1, 65535], 'llm.anthropic.maxTokens': [256], 'llm.lmstudio.maxTokens': [256], 'llm.lmstudio.contextTokens': [2048], 'llm.lmstudio.temperature': [0, 2], 'agent.chatMaxLength': [20, 256] };
+const MINS = { 'agent.idleThinkSeconds': [5], 'agent.maxStepsPerTurn': [1, 50], 'agent.actionTimeoutSeconds': [10], 'agent.historyCompactAt': [10], 'agent.stuckSeconds': [3], 'reconnect.initialDelaySeconds': [1], 'reconnect.maxDelaySeconds': [1], 'server.port': [1, 65535], 'web.port': [1, 65535], 'llm.anthropic.maxTokens': [256], 'llm.lmstudio.maxTokens': [256], 'llm.lmstudio.contextTokens': [12288], 'llm.lmstudio.temperature': [0, 2], 'agent.chatMaxLength': [20, 256] };
 function fieldEl(f) {
   const val = getPath(form, f.p);
   let input;

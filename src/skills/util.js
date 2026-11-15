@@ -579,7 +579,7 @@ export async function unstick(ctx) {
   let dug = false;
   for (const dy of [1, 0]) {
     const b = blockAtSafe(bot, f.plus(dir).offset(0, dy, 0));
-    if (b && isSolid(b) && !/(bedrock|chest|barrel|furnace|crafting_table|_bed$)/.test(b.name) && b.hardness !== -1) {
+    if (b && isSolid(b) && !isProtectedBlockName(b.name) && b.hardness !== -1) {
       try { dug = (await digBlock(ctx, b, { timeoutMs: 8000 })) || dug; } catch (e) { if (e.message === 'Aborted') throw e; }
     }
   }

@@ -128,7 +128,10 @@ export class MemoryStore {
   /** Dashboard: delete a single entry without replacing the whole memory. */
   deleteEntry(section, key) {
     let ok = false;
-    if (section === 'facts') ok = this.removeFact(String(Number(key)));
+    if (section === 'facts') {
+      if (!/^\d+$/.test(String(key))) throw Object.assign(new Error('fact id must be a number'), { status: 400 });
+      ok = this.removeFact(String(key));
+    }
     else if (section === 'places') ok = this.removePlace(key);
     else if (section === 'sessionSummaries' || section === 'deaths') {
       const i = Number(key);
@@ -150,16 +153,21 @@ export class MemoryStore {
     return id;
   }
 
+  /** Removes one fact by id, by exact text, or by a substring that matches exactly one fact. */
   removeFact(idOrText) {
-    const n = Number(idOrText);
-    const needle = String(idOrText).toLowerCase();
-    const before = this.data.facts.length;
-    this.data.facts = this.data.facts.filter((f) =>
-      Number.isFinite(n) && String(idOrText).trim() !== '' ? f.id !== n : !f.text.toLowerCase().includes(needle),
-    );
-    const removed = this.data.facts.length !== before;
-    if (removed) this.scheduleSave();
-    return removed;
+    const raw = String(idOrText ?? '').trim();
+    if (!raw) return false;
+    let idx = -1;
+    if (/^\d+$/.test(raw)) idx = this.data.facts.findIndex((f) => f.id === Number(raw));
+    if (idx < 0) idx = this.data.facts.findIndex((f) => f.text.toLowerCase() === raw.toLowerCase());
+    if (idx < 0) {
+      const hits = this.data.facts.map((f, i) => (f.text.toLowerCase().includes(raw.toLowerCase()) ? i : -1)).filter((i) => i >= 0);
+      if (hits.length === 1) idx = hits[0];
+    }
+    if (idx < 0) return false;
+    this.data.facts.splice(idx, 1);
+    this.scheduleSave();
+    return true;
   }
 
   // ---- places ------------------------------------------------------------

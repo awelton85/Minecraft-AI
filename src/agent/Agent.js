@@ -8,6 +8,7 @@ import { buildSystemPrompt, SUMMARY_REQUEST } from './prompt.js';
 const STOP_WORDS = /^(stop|halt|cancel|freeze|stay|wait|stop it|stop that)\b[\s!.]*$/i;
 const LLM_BACKOFF_S = [2, 5, 15, 30, 60];
 const CONTEXT = Symbol('context-full');
+const CONTEXT_TOO_SMALL = "The model's context window is too small for this bot (tools + instructions alone don't fit). Load the model with at least 16k context in LM Studio and set Context tokens to match, then save settings.";
 const MAX_CONTINUATIONS = 5;          // extra turns in a row when a task needs more than maxStepsPerTurn
 const BOT_CHAT_BUDGET = 6;            // bot->bot replies allowed until a human speaks again
 const PRIMARY_RETRY_MS = 10 * 60_000; // how long to stay on the fallback provider before re-trying the primary
@@ -128,7 +129,10 @@ export class Agent extends EventEmitter {
     }
 
     // "stop", "Steve_AI stop", "Steve, stop!" -> hard stop, no LLM round-trip needed.
-    const bare = text.replace(meRe, '').replace(/\b(everyone|all bots|everybody)\b/ig, '').replace(/^[\s,:;!.-]+/, '').trim();
+    // Also accept the short name: "Steve, stop!" for Steve_AI.
+    const short = me.split('_')[0];
+    const shortRe = short.length >= 3 && short !== me ? new RegExp(`\\b${escapeRe(short)}\\b`, 'i') : null;
+    const bare = text.replace(meRe, '').replace(shortRe || /$^/, '').replace(/\b(everyone|all bots|everybody)\b/ig, '').replace(/^[\s,:;!.-]+/, '').trim();
     const others = this.manager.botUsernames().filter((u) => u !== me);
     const addressedElsewhere = !mentioned && !direct && others.some((u) => new RegExp(`\\b${escapeRe(u)}\\b`, 'i').test(text));
     if (!isBot && STOP_WORDS.test(bare) && !addressedElsewhere) {
@@ -282,6 +286,11 @@ export class Agent extends EventEmitter {
         await this.compact('settings/profile changed');
       }
       if (!this.system) this.startConversation();
+      if (this.history.length === 0 && this.overBudget()) {
+        this.fatalLLMError = CONTEXT_TOO_SMALL;
+        this.log.error(this.fatalLLMError);
+        return;
+      }
 
       const savedEvents = this.events;
       const observation = this.composeObservation(continuing);
@@ -293,13 +302,18 @@ export class Agent extends EventEmitter {
       for (; step < maxSteps && this.running && this.runner.isReady() && !this._stopTurn; step++) {
         const reply = await this.callLLM(turnAbort.signal);
         if (reply === CONTEXT) {
-          // The conversation no longer fits: summarise it and start over right away.
           if (this.history.length === turnStart) {
             this.history.pop();
             this.events = [...savedEvents, ...this.events];
           }
-          await this.compact('context window full', { force: true });
-          this.continuePending = true;
+          if (turnStart === 1) {
+            // Even a brand-new conversation doesn't fit: compacting can't help.
+            this.fatalLLMError = CONTEXT_TOO_SMALL;
+            this.log.error(this.fatalLLMError);
+            return;
+          }
+          // The conversation no longer fits: summarise it and start over.
+          await this.forcedCompact('context window full');
           return;
         }
         if (!reply) {
@@ -340,8 +354,7 @@ export class Agent extends EventEmitter {
         if (extra) this.history.push({ role: 'user', content: extra });
 
         if (this.overBudget()) {
-          await this.compact('context full', { force: true });
-          this.continuePending = true;
+          await this.forcedCompact('context full');
           return;
         }
       }
@@ -378,6 +391,7 @@ export class Agent extends EventEmitter {
     try {
       provider = this.getProvider();
     } catch (e) {
+      if (this.usingFallback) return this.fallbackFailed(e.message);
       this.fatalLLMError = e.message;
       this.log.error(e.message);
       this.runner.emitStatus();
@@ -412,6 +426,7 @@ export class Agent extends EventEmitter {
           return this.callLLM(signal);
         }
         if (!isRetryableLLMError(provider, err)) {
+          if (this.usingFallback) return this.fallbackFailed(msg);
           this.fatalLLMError = msg;
           this.runner.emitStatus();
           return null;
@@ -428,6 +443,27 @@ export class Agent extends EventEmitter {
     }
   }
 
+  /** The fallback provider is unusable (no key, bad key...): go back to the primary after a pause. */
+  fallbackFailed(msg) {
+    this.log.warn(`Fallback provider unusable (${msg}); going back to the primary provider`);
+    this.lastError = `Fallback provider: ${msg}`;
+    this.usingFallback = false;
+    this.provider = null;
+    this.blockedUntil = Date.now() + 60_000;
+    this.runner.emitStatus();
+    return null;
+  }
+
+  /** Compact because the context is full; repeated forced compactions back off instead of looping. */
+  async forcedCompact(reason) {
+    const now = Date.now();
+    const rapid = now - (this._lastForcedCompact || 0) < 60_000;
+    this._lastForcedCompact = now;
+    await this.compact(reason, { force: true });
+    if (rapid) this.blockedUntil = now + 30_000;
+    this.continuePending = true;
+  }
+
   toolDefs() {
     return skills.map((s) => ({ name: s.name, description: s.description, params: s.params }));
   }
@@ -438,6 +474,7 @@ export class Agent extends EventEmitter {
       return { id: call.id, name: call.name, content: `Unknown tool "${call.name}". Available: ${skills.map((s) => s.name).join(', ')}`, isError: true };
     }
     const bot = this.runner.bot;
+    this.runner.cancelReflexFight?.();
     // A reflex fight must not tug against a new non-combat action.
     if (call.name !== 'attack' && bot?.pvp?.target) { try { bot.pvp.stop(); } catch { /* ignore */ } }
 
@@ -559,7 +596,8 @@ export class Agent extends EventEmitter {
     const status = bot?.entity
       ? `[status] health ${Math.round(bot.health)}/20, food ${bot.food}/20, at ${fmtPos(bot.entity.position)}, ${isNight(bot) ? 'night' : 'day'}`
       : '[status] not connected';
-    if (!this.events.length) return status;
+    // After "stop", leave new events queued: they start a fresh turn instead of being buried here.
+    if (!this.events.length || this._stopTurn) return status;
     if (this.events.some((e) => /says: "/.test(e))) this.pendingReply = true;
     const text = 'NEW EVENTS:\n' + this.events.join('\n') + '\n' + status;
     this.events = [];
@@ -611,7 +649,7 @@ export class Agent extends EventEmitter {
         this.log.warn('Could not summarise conversation:', isContextError(e) ? 'conversation too long' : describeLLMError(e));
       }
     }
-    if (!summary && !ended) {
+    if (!summary && !ended && this.history.length >= 4) {
       // Last resort (e.g. the conversation is already too long to summarise): keep the essentials.
       summary = `Goal: ${this.goal || this.character.defaultGoal}. ${this.pendingReply ? 'Someone was waiting for your reply.' : ''}`.trim();
     }

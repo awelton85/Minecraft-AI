@@ -11,7 +11,7 @@ src/
   bot/BotRunner.js      mineflayer connection, plugins, reflexes, auto-reconnect, owns an Agent
   agent/Agent.js        LLM loop: events -> observation -> LLM -> tool calls -> skills
   agent/prompt.js       system prompt builder
-  llm/index.js          createProvider(name, settings, secrets)
+  llm/index.js          createProvider(name, settings, settingsManager, override)
   llm/anthropic.js      Claude API (official @anthropic-ai/sdk)
   llm/openai.js         LM Studio (OpenAI-compatible /v1 endpoint) incl. JSON fallback tool mode
   memory/MemoryStore.js per-character persistent memory (data/memory/<name>.json)
@@ -45,7 +45,9 @@ A Skill:
     required: ['block'],
     additionalProperties: false
   },
-  run: async (ctx, args) => 'Collected 5 oak_log. Inventory now has 7 oak_log.'
+  run: async (ctx, args) => 'Collected 5 oak_log. Inventory now has 7 oak_log.',
+  interruptible: false,                        // optional: true for open-ended actions (follow, explore, wait) that
+                                               // any urgent event (being attacked, a player talking) may cut short
 }
 ```
 
@@ -77,7 +79,7 @@ A Skill:
 ## MemoryStore contract (`src/memory/MemoryStore.js`)
 
 ```js
-const mem = new MemoryStore(characterName)   // file: data/memory/<characterName>.json
+const mem = new MemoryStore(characterName, dataDir)   // file: <dataDir>/memory/<characterName>.json
 await mem.load(); await mem.save();          // save is debounced internally too
 mem.addFact(text)            -> id           // long-lived facts ("owner prefers oak", "base is at ...")
 mem.removeFact(idOrText)     -> boolean
@@ -128,7 +130,7 @@ sm.characters                     // { [name]: profile }
 await sm.saveSettings(patch)      // deep-merge patch, write config/settings.json, emit 'change'
 await sm.saveCharacter(profile)   // write config/characters/<name>.json
 await sm.deleteCharacter(name)
-sm.secretsStatus()                // { anthropicApiKey: boolean }
+sm.secretsStatus()                // { anthropicApiKey: boolean, lmstudioApiKey: boolean }
 await sm.setSecret(key, value)    // config/secrets.json (never sent back to the browser)
 sm.getSecret(key)                 // falls back to env (ANTHROPIC_API_KEY)
 ```

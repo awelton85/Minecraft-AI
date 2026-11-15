@@ -28,8 +28,10 @@ export const memorySkills = [
       additionalProperties: false,
     },
     async run(ctx, args) {
-      const ok = ctx.memory.removeFact(String(args.fact ?? '').trim());
-      if (!ok) throw new SkillError(`No remembered fact matches "${args.fact}".`);
+      const fact = String(args.fact ?? '').trim();
+      if (!fact) throw new SkillError('Say which fact to forget: its id number or its text.');
+      const ok = ctx.memory.removeFact(fact);
+      if (!ok) throw new SkillError(`No single remembered fact matches "${fact}". Use the fact's id number from your memory list.`);
       return `Forgot: ${args.fact}`;
     },
   },

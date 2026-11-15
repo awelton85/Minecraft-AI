@@ -14,7 +14,8 @@ export class OpenAICompatProvider {
   constructor({ baseUrl, apiKey, model, toolMode, temperature, maxTokens, contextTokens }) {
     this.name = 'lmstudio';
     this.baseUrl = baseUrl || 'http://127.0.0.1:1234/v1';
-    this.model = model || '';
+    this.configuredModel = model || '';
+    this.model = this.configuredModel;
     this.toolMode = toolMode || 'auto';
     this.temperature = temperature ?? 0.4;
     this.maxTokens = maxTokens || 4096;
@@ -28,7 +29,10 @@ export class OpenAICompatProvider {
   }
 
   async resolveModel() {
-    if (this.model) return this.model;
+    if (this.configuredModel) return this.configuredModel;
+    // Blank model = "whatever is loaded": re-check now and then, so swapping models in LM Studio works.
+    if (this.model && Date.now() - (this._resolvedAt || 0) < 60_000) return this.model;
+    this._resolvedAt = Date.now();
     // Prefer the model that is actually loaded (LM Studio REST API); /v1/models may list every
     // downloaded model when just-in-time loading is on.
     try {

@@ -17,6 +17,11 @@ const NAME_MSG = 'must be 3-16 letters, digits or underscore (A-Z a-z 0-9 _)';
 const LOG_BACKLOG = 500;
 const CHAT_BACKLOG = 200;
 
+// SettingsManager validation errors (duplicate username, ...) are the user's input problem: 400.
+const saveCharWith = async (sm, p) => {
+  try { await sm.saveCharacter(p); } catch (e) { throw e.status ? e : new HttpError(400, e.message); }
+};
+
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
@@ -144,7 +149,7 @@ function checkRanges(patch, current) {
     ['agent.idleThinkSeconds', 5], ['agent.maxStepsPerTurn', 1, 50], ['agent.actionTimeoutSeconds', 10],
     ['agent.historyCompactAt', 10], ['agent.stuckSeconds', 3], ['agent.chatMaxLength', 20, 256],
     ['reconnect.initialDelaySeconds', 1], ['reconnect.maxDelaySeconds', 1],
-    ['llm.anthropic.maxTokens', 256], ['llm.lmstudio.maxTokens', 256], ['llm.lmstudio.contextTokens', 2048],
+    ['llm.anthropic.maxTokens', 256], ['llm.lmstudio.maxTokens', 256], ['llm.lmstudio.contextTokens', 12288],
     ['llm.lmstudio.temperature', 0, 2],
   ];
   for (const [p, min, max, int] of rules) {
@@ -346,6 +351,11 @@ export async function startWebServer({ settingsManager, manager, log, rootDir })
     checkRanges(patch, sm.settings);
     const before = JSON.parse(JSON.stringify(sm.settings));
     await sm.saveSettings(patch);
+    if ((before.web?.password || '') !== (sm.settings.web?.password || '')) {
+      // Password changed: end every existing session and live connection (they re-login).
+      tokens.clear();
+      for (const c of wss.clients) { try { c.close(4001, 'password changed'); } catch { /* ignore */ } }
+    }
     const after = sm.settings;
     const restartBots = [];
     const restartApp = [];
@@ -379,18 +389,19 @@ export async function startWebServer({ settingsManager, manager, log, rootDir })
   }));
 
   // ---- characters ----
+  const saveChar = (p) => saveCharWith(sm, p);
   api.get('/characters', wrap(() => ({ characters: characters() })));
   api.post('/characters', wrap(async (req) => {
     const p = sanitizeProfile(req.body);
     if (sm.characters?.[p.name]) throw new HttpError(409, `Character ${p.name} already exists`);
-    await sm.saveCharacter(p);
+    await saveChar(p);
     return { characters: characters(), settings: publicSettings(), bots: manager.list() };
   }));
   api.put('/characters/:name', wrap(async (req) => {
     if (!validCharacterName(req.params.name) || !sm.characters?.[req.params.name]) throw new HttpError(404, 'Unknown character');
     const p = sanitizeProfile({ ...req.body, name: req.params.name });
     const old = sm.characters[req.params.name];
-    await sm.saveCharacter(p);
+    await saveChar(p);
     return { characters: characters(), settings: publicSettings(), bots: manager.list() };
   }));
   api.delete('/characters/:name', wrap(async (req) => {
@@ -487,6 +498,7 @@ export async function startWebServer({ settingsManager, manager, log, rootDir })
   wss.on('connection', (ws) => {
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
+    ws.on('error', (e) => logTo(log, 'debug', `WebSocket error: ${e.message}`));
     send(ws, { type: 'hello', data: { bots: manager.list(), passwordRequired: passwordRequired() } });
     send(ws, { type: 'backlog', data: { logs: logBuf, chats: chatBuf } });
     ws.on('message', (raw) => {

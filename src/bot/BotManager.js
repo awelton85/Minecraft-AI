@@ -22,16 +22,26 @@ export class BotManager extends EventEmitter {
   }
 
   async getRunner(name, create = false) {
-    let r = this.runners.get(name);
-    if (!r && create) {
-      const character = this.sm.characters[name];
-      if (!character) throw new Error(`Unknown character ${name}`);
-      const memory = await new MemoryStore(name, this.dataDir).load();
-      r = new BotRunner({ character, settingsManager: this.sm, manager: this, memory, log: this.logger.for(name) });
-      r._profileJson = JSON.stringify(character);
-      this.runners.set(name, r);
+    const r = this.runners.get(name);
+    if (r || !create) return r;
+    // Concurrent callers share one in-flight creation, so a character never gets two runners.
+    this._creating ??= new Map();
+    if (!this._creating.has(name)) {
+      this._creating.set(name, (async () => {
+        try {
+          const character = this.sm.characters[name];
+          if (!character) throw new Error(`Unknown character ${name}`);
+          const memory = await new MemoryStore(name, this.dataDir).load();
+          const nr = new BotRunner({ character, settingsManager: this.sm, manager: this, memory, log: this.logger.for(name) });
+          nr._profileJson = JSON.stringify(character);
+          this.runners.set(name, nr);
+          return nr;
+        } finally {
+          this._creating.delete(name);
+        }
+      })());
     }
-    return r;
+    return this._creating.get(name);
   }
 
   async syncCharacters() {
@@ -123,13 +133,13 @@ export class BotManager extends EventEmitter {
 
   getMemory(name) {
     const r = this.runners.get(name);
-    if (!r) throw new Error(`Unknown character ${name}`);
+    if (!r) throw httpError(404, `${name} is not an active character (add it to the character list first)`);
     return r.memory.data;
   }
 
   deleteMemoryEntry(name, section, key) {
     const r = this.runners.get(name);
-    if (!r) throw new Error(`Unknown character ${name}`);
+    if (!r) throw httpError(404, `${name} is not an active character`);
     return r.memory.deleteEntry(section, key);
   }
 
@@ -173,4 +183,10 @@ export class BotManager extends EventEmitter {
     for (const [n, r] of this.runners) if (r.isReady()) return n === name;
     return false;
   }
+}
+
+function httpError(status, message) {
+  const e = new Error(message);
+  e.status = status;
+  return e;
 }
