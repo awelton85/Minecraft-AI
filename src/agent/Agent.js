@@ -101,7 +101,14 @@ export class Agent extends EventEmitter {
    * Queue an event for the model. `urgent` aborts an interruptible action (follow, explore, wait);
    * `abortAny` aborts whatever is running (owner talking, danger).
    */
-  notify(text, { urgent = false, abortAny = false, passive = false } = {}) {
+  notify(text, { urgent = false, abortAny = false, passive = false, source = 'world' } = {}) {
+    // Things that happen in the world (attacks, low health, death, reconnects) only wake the model
+    // while an owner is online; otherwise reflexes handle them and the model hears about it later.
+    // A person talking to the bot (source 'person') always wakes it.
+    if (source === 'world' && this.agentCfg.pauseWhenOwnerAway !== false && !this.ownerOnline()) {
+      if (abortAny || (urgent && this.currentAction?.interruptible)) this.abortAction('interrupted: ' + text.slice(0, 80), { interrupted: true });
+      passive = true;
+    }
     if (passive) {
       // Context for the next turn, but not a reason to start one (no LLM call, no API cost).
       this.passiveEvents.push(`[${clock()}] ${text}`);
@@ -146,25 +153,25 @@ export class Agent extends EventEmitter {
       this.hardStop(`${from} said stop`);
       this.goal = '';
       this.continuePending = false;
-      this.notify(`${from} told you to stop. You stopped everything and dropped your goal. Wait for new instructions.`);
+      this.notify(`${from} told you to stop. You stopped everything and dropped your goal. Wait for new instructions.`, { source: 'person' });
       this.idleUntil = Date.now() + 120_000; // don't wander off on your own right after being told to stop
       return;
     }
     if (addressedElsewhere) return; // clearly for another bot
     const via = source === 'voice' ? ' (spoken)' : source === 'dashboard' ? ' (via dashboard)' : direct ? ' (whispered to you)' : '';
     // A human talking to us takes priority over whatever we're doing.
-    this.notify(`${from}${via} says: "${text}"`, { urgent: !isBot, abortAny: !isBot });
+    this.notify(`${from}${via} says: "${text}"`, { urgent: !isBot, abortAny: !isBot, source: 'person' });
   }
 
   setGoal(text) {
     this.goal = String(text || '').trim();
-    this.notify(this.goal ? `Your owner set a new goal: ${this.goal}` : 'Your owner cleared your goal.', { abortAny: true });
+    this.notify(this.goal ? `Your owner set a new goal: ${this.goal}` : 'Your owner cleared your goal.', { abortAny: true, source: 'person' });
   }
 
   setAutonomous(on) {
     this.autonomous = Boolean(on);
     this.idleBackoff = 1;
-    this.notify(on ? 'Autonomous mode ON: keep working on your goal on your own.' : 'Autonomous mode OFF: only act when someone asks you something.');
+    this.notify(on ? 'Autonomous mode ON: keep working on your goal on your own.' : 'Autonomous mode OFF: only act when someone asks you something.', { source: 'person' });
     this.runner.emitStatus();
   }
 
@@ -610,10 +617,13 @@ export class Agent extends EventEmitter {
       ? `[status] health ${Math.round(bot.health)}/20, food ${bot.food}/20, at ${fmtPos(bot.entity.position)}, ${isNight(bot) ? 'night' : 'day'}`
       : '[status] not connected';
     // After "stop", leave new events queued: they start a fresh turn instead of being buried here.
-    if (!this.events.length || this._stopTurn) return status;
+    if (this._stopTurn) return status;
+    const all = [...this.passiveEvents, ...this.events];
+    if (!all.length) return status;
     if (this.events.some((e) => /says: "/.test(e))) this.pendingReply = true;
-    const text = 'NEW EVENTS:\n' + this.events.join('\n') + '\n' + status;
+    const text = 'NEW EVENTS:\n' + all.join('\n') + '\n' + status;
     this.events = [];
+    this.passiveEvents = [];
     return text;
   }
 

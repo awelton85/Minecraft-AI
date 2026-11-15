@@ -75,6 +75,9 @@ Double-click **`start-bots.bat`**. The console prints lines such as:
 ```
 Dashboard: https://localhost:3000
 Dashboard: https://192.168.1.20:3000
+Browser will warn about the self-signed certificate: choose Advanced -> Proceed.
+WARN  Dashboard has no password and is reachable on the LAN. Set one in Settings -> Web.
+Minecraft server: 127.0.0.1:25565 | LLM: anthropic | characters: Steve_AI
 WARN  No Claude API key configured yet - add it on the dashboard Settings page, or switch the provider to LM Studio.
 WARN  Set your Minecraft username under "owners" in Settings so the bots follow your commands.
 INFO  [Steve_AI] Connecting to 127.0.0.1:25565 as Steve_AI...
@@ -115,7 +118,7 @@ Talk to the bot in chat: `Steve_AI follow me`, `Steve_AI get 10 oak logs and mak
 
 1. Install LM Studio and download a model that's good at **tool / function calling**. Recent Qwen instruct models in the 7B–32B range work well, as do Llama 3.1+ instruct and Mistral Small. Larger models plan better.
 2. Load the model with a context length of at least **16384**.
-3. Go to the **Developer** tab and click **Start Server**. The default address is `http://127.0.0.1:1234`.
+3. Start LM Studio's local server. The default address is `http://127.0.0.1:1234`. Depending on your LM Studio version this is in the **Developer** tab (*Start Server*) or the **Model Server** page in the sidebar.
    - If LM Studio runs on a *different* PC from the bots, enable **Serve on Local Network** and use that PC's IP in the dashboard, e.g. `http://192.168.1.30:1234/v1`.
 4. On the dashboard, open **Settings → LLM provider → LM Studio**, click **Refresh models**, pick the model (leave it blank to use whatever is loaded), then click **Test connection**. The first test can take up to a minute while LM Studio loads the model; it shows "testing…" until then. Finally click **Save settings** at the bottom of the page.
 5. Set **Tool mode** to *auto*. If the model often "talks about" actions instead of doing them, set it to *json*.
@@ -143,9 +146,21 @@ Address them by name in chat. `everyone …` goes to all of them. Bot-to-bot cha
 
 ## 10. Keeping API costs down (Claude)
 
-- **Pause idle check-ins while no owner is online** (on by default): bots only work on their own while one of the **Owners** is in the game. They still answer when spoken to (in game or from the dashboard), and with no owner set they never work on their own.
+- **Pause idle check-ins while no owner is online** (on by default). While none of the **Owners** is in the game, the bots make no model calls on their own: no idle work, and no reaction to being attacked, low health or dying. Built-in reflexes (fighting back, eating, respawning) still run without the model, and the bot hears about what happened when it next thinks. The bots still answer anyone who talks to them in game or from the dashboard, and that conversation does use the model.
+- When the bot program shuts down, each bot makes one model call to save a summary of its conversation to memory, if there was a conversation.
 - Idle check-ins that find nothing to do back off gradually, up to once every 10 minutes.
 - A lower *effort* setting, or a smaller model (`claude-sonnet-5-5`, `claude-haiku-5-5`), is cheaper. You can turn *Autonomous* off per bot so it only acts when asked.
+
+## Updating
+
+1. Stop the bots (**Ctrl+C**, then **Y**) and the server (type `stop`).
+2. In the project folder, run `git pull`. If you downloaded a ZIP, download the new ZIP instead and copy your `config\settings.json`, `config\secrets.json`, `config\characters\`, `data\` and `server\` folders into it.
+3. Run **`setup.bat`** again. It installs any new dependencies and skips downloads you already have.
+   - Or, in a terminal, run `npm install`.
+   - In PowerShell, type `npm.cmd install` instead (see Troubleshooting).
+4. Start the server and the bots as usual.
+
+Your world, settings, API key and the bots' memories are kept.
 
 ## Troubleshooting
 
@@ -159,6 +174,7 @@ Address them by name in chat. `everyone …` goes to all of them. Bot-to-bot cha
 | "Cannot reach LM Studio" | LM Studio's server is not started, or it's on another PC without *Serve on Local Network*. |
 | Mic button says it needs a secure page | Open the dashboard with `https://`, not `http://`. |
 | Can't open the dashboard or join from another PC | Windows Firewall (section 3) or the network is set to *Public*. |
+| PowerShell: `npm.ps1 cannot be loaded because running scripts is disabled` | Type `npm.cmd` instead of `npm` (e.g. `npm.cmd install`), or just run `setup.bat` / `start-bots.bat`, which don't need it. No system setting needs changing. |
 | Bot acting confused or looping | Dashboard → Bots → **Reset conversation** (long-term memory is kept). |
 | Bot keeps failing at something | It will ask for help after repeated failures. Give it a simpler goal, or check the Logs tab. |
 

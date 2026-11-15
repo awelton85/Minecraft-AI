@@ -13,7 +13,7 @@ AI-controlled players for Minecraft Java Edition. Each bot is a real player on y
   - Every action has a timeout, and movement has a stuck detector that tries to get unstuck before giving up.
   - Failed actions are tracked. The model is told to change approach after repeated failures, and a bot that is truly stuck asks you for help instead of burning tokens.
   - LLM errors are retried with back-off. One crashing bot never takes down the others.
-- **Survival reflexes**: auto-eat, auto-equip armour, fights back when attacked while idle (and interrupts waiting, following or exploring to react), warns the model when health gets low from any cause, auto-respawn. Deaths are remembered.
+- **Survival reflexes**: auto-eat, auto-equip armour, fights back when attacked while idle (and interrupts waiting, following or exploring to react), warns the model when health gets low from any cause (while an owner is online; otherwise reflexes handle it without API calls), auto-respawn. Deaths are remembered.
 - **Persistent memory per character**: facts, named places, summaries of past sessions and death history. It's stored as JSON in `data/memory/` and can be edited from the dashboard.
 - **Multiple bots at once**: each has its own personality, voice, model and memory. They know about each other, and bot-to-bot chat is rate-limited so they can't loop forever.
 - **About 40 skills**: mining, crafting (auto-crafts planks and sticks), smelting, building shapes and shelters, farming (tilling and planting), chests, item pickup, combat and fleeing, following, exploring, sleeping, returning to where you died, and saved places. Player builds, chests and beds are protected from digging.
@@ -69,7 +69,7 @@ The bots answer in game chat, and the dashboard reads their replies aloud if TTS
 
 - **Claude API**: `claude-opus-5-5` is the default and the most capable. `claude-sonnet-5-5` and `claude-haiku-5-5` are cheaper and faster. *Effort* trades depth of thinking for speed and cost: `low` or `medium` is fine for a game bot.
   - Autonomous mode makes calls continuously while a bot is working, and every ~45 s when idle. Watch your API usage, turn autonomous off when you're away, or use LM Studio for idle play.
-- **LM Studio**: use a model with good tool calling (for example a recent Qwen, Llama 3.x or Mistral instruct model of 7B+; bigger plans better). In LM Studio, load the model, then Developer → *Start Server*.
+- **LM Studio**: use a model with good tool calling (for example a recent Qwen, Llama 3.x or Mistral instruct model of 7B+; bigger plans better). In LM Studio, load the model, then start the local server (the *Developer* tab or the *Model Server* page, depending on the version).
   - If LM Studio runs on a different PC from the bots, enable *Serve on Local Network* and put that PC's IP in Settings.
   - *Tool mode*: `auto` starts with native function calling and falls back to a JSON prompt format if the model can't do it.
   - Give the model a context length of at least 16k, and set the same value in Settings.
