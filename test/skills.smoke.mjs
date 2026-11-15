@@ -406,6 +406,33 @@ tests.surface = async () => {
   check('come_up_to_surface from 1x1 shaft', r.ok && bot.entity.position.y > y0 + 5, `${r.out ?? r.err?.message} y=${bot.entity.position.y}`);
 };
 
+tests.wallstep = async () => {
+  // Regression: prismarine-physics' double half-width (0.3) vs the server's float (0.3F) made the server rubber-band
+  // the bot every tick whenever it touched a wall (e.g. sprint-jump up a 1-block step inside a 1x1 shaft); the pathfinder
+  // then stalled forever. moveTo()/getMovements() apply util.applyPhysicsFix(); we reset it first to prove that.
+  const { moveTo, goals } = await import('../src/skills/util.js');
+  const X = 300, Y = 200, Z = 300;
+  await setup([`tp ${B} ${X} ${Y + 4} ${Z}`]);
+  await sleep(1500);
+  await mc(`fill ${X - 3} ${Y - 1} ${Z - 3} ${X + 3} ${Y + 6} ${Z + 3} stone`);
+  await mc(`fill ${X} ${Y} ${Z} ${X} ${Y + 5} ${Z} air`);          // 1x1 shaft
+  await mc(`fill ${X} ${Y + 1} ${Z + 1} ${X} ${Y + 3} ${Z + 1} air`); // side pocket above a stone step at (X,Y,Z+1)
+  await mc(`tp ${B} ${X + 0.5} ${Y} ${Z + 0.5}`);
+  await sleep(1500);
+  bot.physics.playerHalfWidth = 0.3; // undo the fix
+  let forced = 0;
+  const onPos = () => forced++;
+  bot._client.on('position', onPos);
+  const t0 = Date.now();
+  let err;
+  try { await moveTo(ctx, new goals.GoalBlock(X, Y + 1, Z + 1), { label: 'step', timeoutMs: 20000 }); } catch (e) { err = e; }
+  bot._client.off('position', onPos);
+  const p = bot.entity.position;
+  check('step up inside 1x1 shaft without rubber-banding', !err && Math.floor(p.y) === Y + 1 && Math.floor(p.z) === Z + 1 && Date.now() - t0 < 15000, `${err?.message ?? ''} pos=${p} forced=${forced} ${Date.now() - t0}ms`);
+  check('physics half-width matches server float', bot.physics.playerHalfWidth === Math.fround(0.3));
+  await mc(`fill ${X - 3} ${Y - 1} ${Z - 3} ${X + 3} ${Y + 6} ${Z + 3} air`);
+};
+
 tests.abort = async () => {
   await setup([`tp ${B} -6 95 -8`]);
   await sleep(2000);

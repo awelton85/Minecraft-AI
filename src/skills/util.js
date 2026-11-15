@@ -139,10 +139,26 @@ export function isLiquid(block) {
   return !!block && (block.name === 'water' || block.name === 'lava');
 }
 
+/**
+ * Runtime patch for a prismarine-physics / vanilla-server mismatch (do NOT edit node_modules).
+ * The server's player hitbox half-width is the float 0.3F (0.30000001192...), prismarine-physics uses the double 0.3.
+ * When the client clips against a wall it therefore ends up ~1.2e-8 blocks inside it, and recent Paper (1.21.x / 26.x)
+ * rejects such a position and rubber-bands the bot (teleport packet every tick). mineflayer then sets
+ * onGround=false on each forced move, so the bot looks "collided, airborne, zero velocity, no controls" and the
+ * pathfinder stalls forever, e.g. on a sprint-jump up a 1-block step in a 1x1 shaft where the bot touches the wall
+ * while still below the block top. Using the float value makes client clipping match the server exactly.
+ * Idempotent; the pathfinder simulates with bot.physics too, so its planning is consistent.
+ */
+export function applyPhysicsFix(bot) {
+  const ph = bot?.physics;
+  if (ph && typeof ph.playerHalfWidth === 'number' && ph.playerHalfWidth === 0.3) ph.playerHalfWidth = Math.fround(0.3);
+}
+
 /** Per-bot cached Movements; collectblock / pvp replace pathfinder movements so we re-apply ours before moving. */
 const movementCache = new WeakMap();
 export function getMovements(ctx, { dig = true } = {}) {
   const bot = ctx.bot;
+  applyPhysicsFix(bot);
   let m = movementCache.get(bot);
   if (!m) {
     m = new Movements(bot);
@@ -543,6 +559,7 @@ export async function unstick(ctx) {
 export async function moveTo(ctx, goal, opts = {}) {
   const bot = ctx.bot;
   if (!bot.pathfinder) throw new SkillError('Pathfinder is not loaded.');
+  applyPhysicsFix(bot);
   checkAbort(ctx);
   const label = opts.label ?? 'destination';
   const timeoutMs = opts.timeoutMs ?? 120000;

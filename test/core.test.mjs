@@ -29,6 +29,11 @@ test('extractTextToolCalls: ignores unknown tools and plain text', () => {
   assert.equal(extractTextToolCalls('Just chatting {not json}', known).calls.length, 0);
 });
 
+test('extractTextToolCalls: HTML-escaped JSON', () => {
+  const r = extractTextToolCalls('```json\n{&#34;tool_calls&#34;: [{&#34;name&#34;: &#34;chat&#34;, &#34;args&#34;: {&#34;text&#34;: &#34;hi&#34;}}]}\n```', known);
+  assert.deepEqual(r.calls[0].args, { text: 'hi' });
+});
+
 test('splitThinking removes <think> blocks', () => {
   const r = splitThinking('<think>plan stuff</think>Hello');
   assert.equal(r.text, 'Hello');

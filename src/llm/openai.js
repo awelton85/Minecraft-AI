@@ -218,7 +218,8 @@ export function splitThinking(content) {
 /** Recovers tool calls written as text by models that don't use native tool calling. */
 export function extractTextToolCalls(text, known) {
   const calls = [];
-  let rest = String(text || '');
+  // Some chat templates / small models HTML-escape quotes and brackets (&#34; &quot; &#91; ...).
+  let rest = decodeEntities(String(text || ''));
   const push = (obj) => {
     const list = Array.isArray(obj?.tool_calls) ? obj.tool_calls : Array.isArray(obj) ? obj : [obj];
     for (const c of list) {
@@ -241,4 +242,10 @@ export function extractTextToolCalls(text, known) {
     }
   }
   return { calls, rest };
+}
+
+function decodeEntities(s) {
+  if (!/&(#\d+|quot|amp|lt|gt|apos);/.test(s)) return s;
+  return s.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
