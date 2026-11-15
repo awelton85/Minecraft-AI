@@ -170,7 +170,7 @@ export class Agent extends EventEmitter {
     this._stopTurn = true;
     this.abortAction(reason, { interrupted: true });
     this._turnAbort?.abort(new Error(reason));
-    try { this.runner.bot?.pathfinder?.stop(); this.runner.bot?.pvp?.stop(); this.runner.bot?.clearControlStates(); } catch { /* ignore */ }
+    try { this.runner.bot?.pathfinder?.setGoal(null); this.runner.bot?.pvp?.stop(); this.runner.bot?.clearControlStates(); } catch { /* ignore */ }
   }
 
   /** Dashboard "Reset conversation": forget the current conversation (long-term memory is kept). */

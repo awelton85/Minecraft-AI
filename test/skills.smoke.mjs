@@ -402,6 +402,7 @@ tests.surface = async () => {
   await sleep(1500);
   const y0 = bot.entity.position.y;
   const r = await run(ctx, 'come_up_to_surface');
+  await mc(`fill -5 83 -9 -3 92 -7 air`); // remove the test tube
   check('come_up_to_surface from 1x1 shaft', r.ok && bot.entity.position.y > y0 + 5, `${r.out ?? r.err?.message} y=${bot.entity.position.y}`);
 };
 

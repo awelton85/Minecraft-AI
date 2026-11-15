@@ -31,6 +31,14 @@ export const movementSkills = [
       const x = numArg(args.x), z = numArg(args.z);
       const range = numArg(args.range, 1);
       if (x === undefined || z === undefined) throw new SkillError('x and z are required.');
+      if (args.y !== undefined && args.y !== null) {
+        const minY = ctx.bot.game?.minY ?? -64;
+        const maxY = minY + (ctx.bot.game?.height ?? 384) - 1;
+        const y = numArg(args.y);
+        if (y === undefined || y < minY || y > maxY) {
+          throw new SkillError(`y=${args.y} is outside the world (valid height ${minY} to ${maxY} in this dimension).`);
+        }
+      }
       let goal;
       if (args.y === undefined || args.y === null) goal = new goals.GoalNearXZ(x, z, Math.max(range, 1));
       else if (range <= 0.5) goal = new goals.GoalBlock(Math.floor(x), Math.floor(numArg(args.y)), Math.floor(z));

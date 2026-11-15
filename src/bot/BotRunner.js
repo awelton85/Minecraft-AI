@@ -148,7 +148,7 @@ export class BotRunner {
     clearInterval(this._statusTimer);
     clearInterval(this._watchdog);
     clearTimeout(this._stableTimer);
-    try { bot.pathfinder?.stop(); } catch { /* ignore */ }
+    try { bot.pathfinder?.setGoal(null); } catch { /* ignore */ }
     try { bot.quit(reason); } catch { /* ignore */ }
     try { bot.end(reason); } catch { /* ignore */ }
   }
@@ -200,6 +200,7 @@ export class BotRunner {
     const scaffold = ['dirt', 'cobblestone', 'netherrack', 'cobbled_deepslate', 'andesite', 'diorite', 'granite', 'tuff'];
     moves.scafoldingBlocks = scaffold.map((n) => this.mcData.itemsByName[n]?.id).filter((id) => id !== undefined);
     bot.pathfinder.setMovements(moves);
+    if (bot.pvp) bot.pvp.movements = moves; // otherwise pvp swaps in its own default Movements
     bot.pathfinder.thinkTimeout = 10_000;
     bot.pathfinder.tickTimeout = 20;
 

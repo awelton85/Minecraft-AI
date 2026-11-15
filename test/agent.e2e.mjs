@@ -62,18 +62,21 @@ const sm = await new SettingsManager(root).load();
 const manager = new BotManager({ settingsManager: sm, log, rootDir: root });
 const chats = [];
 manager.on('chat', (c) => chats.push(c));
+if (process.env.SHOW_THOUGHTS) manager.on('thought', (t) => console.log('   thought:', t.text.slice(0, 300)));
 await manager.startAll();
 const runner = await manager.getRunner('E2E_Bot');
 const waitFor = async (fn, ms, step = 250) => { const end = Date.now() + ms; while (Date.now() < end) { if (await fn()) return true; await sleep(step); } return false; };
 
 check('connects and spawns', await waitFor(() => runner.isReady(), 30000));
-consoleCmd('clear E2E_Bot');
 const logCount = () => runner.bot?.inventory.items().filter((i) => i.name.endsWith('_log')).reduce((a, i) => a + i.count, 0) || 0;
+consoleCmd('clear E2E_Bot');
+if (process.env.E2E_START) consoleCmd(`tp E2E_Bot ${process.env.E2E_START}`); // e.g. "4.5 94 -3.5": a known open spot
+check('inventory cleared', await waitFor(() => logCount() === 0, 10000));
 
 // 1. a chat command flows through the agent into skills
 manager.sendMessage('E2E_Bot', 'get wood');
 check('collects wood on request', await waitFor(() => logCount() >= 2, 120000), `logs=${logCount()}`);
-check('bot spoke in chat', chats.some((c) => c.from === 'E2E_Bot' && /On it/.test(c.text)));
+check('bot spoke in chat', await waitFor(() => chats.some((c) => c.from === 'E2E_Bot' && /On it/.test(c.text)), 10000));
 const first = calls.find((c) => c.messages.some((m) => m.role === 'user' && /get wood/.test(m.content)));
 check('system prompt mentions owner + memory', first && /Tester/.test(first.system) && /memory/i.test(first.system));
 check('observation included', first && /SURROUNDINGS/.test(first.messages.at(-1).content));
